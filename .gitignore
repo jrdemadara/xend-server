@@ -1,0 +1,19 @@
+# Local env
+.env
+
+# Secrets
+secrets/*.json
+
+# Go
+bin/
+*.test
+*.out
+coverage.out
+.gocache/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store

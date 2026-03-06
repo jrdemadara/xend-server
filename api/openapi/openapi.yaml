@@ -1,0 +1,608 @@
+openapi: 3.0.3
+info:
+  title: Xend Chat API
+  version: 1.0.0
+  description: |
+    Privacy-first chat API for Xend.
+    The server stores encrypted message payloads and Signal key material metadata.
+servers:
+  - url: https://api.xend.app
+    description: Production
+  - url: http://localhost:8080
+    description: Local development
+
+tags:
+  - name: Auth
+  - name: Devices
+  - name: Prekeys
+  - name: Messages
+  - name: Conversations
+
+security:
+  - bearerAuth: []
+
+paths:
+  /v1/auth/register:
+    post:
+      tags: [Auth]
+      summary: Register a new user and primary device
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          description: Username or email already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: Login with device context
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Refresh access token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshTokenRequest'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenRefreshResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/devices:
+    post:
+      tags: [Devices]
+      summary: Register additional device for current user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateDeviceRequest'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeviceResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/devices/{deviceId}/signed-prekey:
+    put:
+      tags: [Devices]
+      summary: Upsert signed prekey for a device
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpsertSignedPrekeyRequest'
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignedPrekeyResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /v1/devices/{deviceId}/one-time-prekeys/batch:
+    post:
+      tags: [Prekeys]
+      summary: Upload one-time prekeys in batch
+      parameters:
+        - $ref: '#/components/parameters/DeviceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UploadOneTimePrekeysRequest'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadOneTimePrekeysResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /v1/prekeys/{userId}:
+    get:
+      tags: [Prekeys]
+      summary: Fetch recipient key bundle for session setup
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrekeyBundleResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/messages:
+    post:
+      tags: [Messages]
+      summary: Send encrypted message (REST fallback)
+      description: |
+        Primary low-latency path should use WebSocket; this endpoint is a reliable fallback.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendMessageRequest'
+      responses:
+        '202':
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SendMessageResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /v1/conversations/{conversationId}/messages:
+    get:
+      tags: [Conversations]
+      summary: List encrypted messages for conversation sync
+      parameters:
+        - $ref: '#/components/parameters/ConversationId'
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - in: query
+          name: cursor
+          schema:
+            type: string
+          description: Opaque pagination cursor
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationMessagesResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    DeviceId:
+      in: path
+      name: deviceId
+      required: true
+      schema:
+        type: string
+        format: uuid
+    UserId:
+      in: path
+      name: userId
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ConversationId:
+      in: path
+      name: conversationId
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  responses:
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: Forbidden
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  schemas:
+    RegisterRequest:
+      type: object
+      required: [username, email, password, device]
+      properties:
+        username:
+          type: string
+          minLength: 3
+          maxLength: 32
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+          minLength: 8
+        device:
+          $ref: '#/components/schemas/CreateDeviceRequest'
+
+    LoginRequest:
+      type: object
+      required: [email, password, device_name]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+        device_name:
+          type: string
+          maxLength: 64
+
+    RefreshTokenRequest:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token:
+          type: string
+
+    TokenRefreshResponse:
+      type: object
+      required: [access_token, expires_in]
+      properties:
+        access_token:
+          type: string
+        expires_in:
+          type: integer
+          description: Seconds until expiration
+
+    AuthResponse:
+      type: object
+      required: [user_id, device_id, access_token, refresh_token, expires_in]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        device_id:
+          type: string
+          format: uuid
+        access_token:
+          type: string
+        refresh_token:
+          type: string
+        expires_in:
+          type: integer
+          description: Seconds until expiration
+
+    CreateDeviceRequest:
+      type: object
+      required: [device_name, platform, registration_id, identity_key_public]
+      properties:
+        device_name:
+          type: string
+          maxLength: 64
+        platform:
+          type: string
+          enum: [android, ios, desktop]
+        registration_id:
+          type: integer
+        identity_key_public:
+          type: string
+          description: Base64-encoded Signal identity public key
+        fcm_token:
+          type: string
+          description: Optional mobile push token
+
+    DeviceResponse:
+      type: object
+      required: [device_id, user_id, platform, registration_id, created_at]
+      properties:
+        device_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+        platform:
+          type: string
+          enum: [android, ios, desktop]
+        registration_id:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+
+    UpsertSignedPrekeyRequest:
+      type: object
+      required: [key_id, public_key, signature]
+      properties:
+        key_id:
+          type: integer
+        public_key:
+          type: string
+          description: Base64-encoded signed prekey public key
+        signature:
+          type: string
+          description: Base64-encoded signature over signed prekey
+
+    SignedPrekeyResponse:
+      type: object
+      required: [device_id, key_id, created_at]
+      properties:
+        device_id:
+          type: string
+          format: uuid
+        key_id:
+          type: integer
+        created_at:
+          type: string
+          format: date-time
+
+    OneTimePrekeyInput:
+      type: object
+      required: [key_id, public_key]
+      properties:
+        key_id:
+          type: integer
+        public_key:
+          type: string
+          description: Base64-encoded one-time prekey public key
+
+    UploadOneTimePrekeysRequest:
+      type: object
+      required: [prekeys]
+      properties:
+        prekeys:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items:
+            $ref: '#/components/schemas/OneTimePrekeyInput'
+
+    UploadOneTimePrekeysResponse:
+      type: object
+      required: [device_id, inserted_count]
+      properties:
+        device_id:
+          type: string
+          format: uuid
+        inserted_count:
+          type: integer
+
+    PrekeyBundleResponse:
+      type: object
+      required: [user_id, devices]
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        devices:
+          type: array
+          items:
+            $ref: '#/components/schemas/DevicePrekeyBundle'
+
+    DevicePrekeyBundle:
+      type: object
+      required: [device_id, registration_id, identity_key_public, signed_prekey]
+      properties:
+        device_id:
+          type: string
+          format: uuid
+        registration_id:
+          type: integer
+        identity_key_public:
+          type: string
+        signed_prekey:
+          $ref: '#/components/schemas/SignedPrekey'
+        one_time_prekey:
+          $ref: '#/components/schemas/OneTimePrekey'
+          nullable: true
+
+    SignedPrekey:
+      type: object
+      required: [key_id, public_key, signature]
+      properties:
+        key_id:
+          type: integer
+        public_key:
+          type: string
+        signature:
+          type: string
+
+    OneTimePrekey:
+      type: object
+      required: [key_id, public_key]
+      properties:
+        key_id:
+          type: integer
+        public_key:
+          type: string
+
+    RecipientEnvelope:
+      type: object
+      required: [recipient_user_id, recipient_device_id, ciphertext, message_type]
+      properties:
+        recipient_user_id:
+          type: string
+          format: uuid
+        recipient_device_id:
+          type: string
+          format: uuid
+        message_type:
+          type: string
+          enum: [signal_whisper, signal_prekey, signal_sender_key]
+        ciphertext:
+          type: string
+          description: Base64-encoded encrypted payload
+
+    SendMessageRequest:
+      type: object
+      required: [client_message_id, conversation_id, recipient_envelopes]
+      properties:
+        client_message_id:
+          type: string
+          description: Client-generated idempotency key
+          maxLength: 128
+        conversation_id:
+          type: string
+          format: uuid
+        recipient_envelopes:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/RecipientEnvelope'
+        sender_timestamp:
+          type: string
+          format: date-time
+
+    SendMessageResponse:
+      type: object
+      required: [message_id, accepted_at]
+      properties:
+        message_id:
+          type: string
+          format: uuid
+        accepted_at:
+          type: string
+          format: date-time
+
+    ConversationMessage:
+      type: object
+      required: [message_id, conversation_id, sender_device_id, ciphertext, message_type, created_at]
+      properties:
+        message_id:
+          type: string
+          format: uuid
+        conversation_id:
+          type: string
+          format: uuid
+        sender_device_id:
+          type: string
+          format: uuid
+        recipient_device_id:
+          type: string
+          format: uuid
+        message_type:
+          type: string
+          enum: [signal_whisper, signal_prekey, signal_sender_key]
+        ciphertext:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+
+    ConversationMessagesResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConversationMessage'
+        next_cursor:
+          type: string
+          nullable: true
+
+    ErrorResponse:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          example: invalid_request
+        message:
+          type: string
+        request_id:
+          type: string
+          description: Traceable server request id
