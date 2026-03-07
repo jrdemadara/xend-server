@@ -120,6 +120,44 @@ func (h *DeviceHandler) UploadOneTimePrekeys(w http.ResponseWriter, r *http.Requ
 	httputil.JSON(w, http.StatusCreated, map[string]int64{"inserted_count": inserted})
 }
 
+func (h *DeviceHandler) UpsertKyberPrekey(w http.ResponseWriter, r *http.Request) {
+	claims, ok := claimsFromContext(r.Context())
+	if !ok {
+		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
+		return
+	}
+	deviceID := r.PathValue("device_id")
+	if deviceID == "" {
+		httputil.Error(w, http.StatusBadRequest, "invalid_request", "device_id is required")
+		return
+	}
+	owns, err := h.repo.DeviceBelongsToUser(r.Context(), deviceID, claims.UserID)
+	if err != nil {
+		httputil.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
+		return
+	}
+	if !owns {
+		httputil.Error(w, http.StatusForbidden, "forbidden", "device does not belong to user")
+		return
+	}
+
+	var req auth.KyberPrekeyRequest
+	if err := httputil.DecodeJSON(r, &req); err != nil {
+		httputil.Error(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		return
+	}
+	if req.KeyID <= 0 || strings.TrimSpace(req.PublicKey) == "" || strings.TrimSpace(req.Signature) == "" {
+		httputil.Error(w, http.StatusBadRequest, "invalid_request", "missing required fields")
+		return
+	}
+
+	if err := h.repo.UpsertKyberPrekey(r.Context(), deviceID, req); err != nil {
+		httputil.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
+		return
+	}
+	httputil.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
 func (h *DeviceHandler) UpsertPushToken(w http.ResponseWriter, r *http.Request) {
 	claims, ok := claimsFromContext(r.Context())
 	if !ok {

@@ -56,6 +56,12 @@ type RelationshipLevelProgress struct {
 	UpdatedAt           time.Time
 }
 
+type RelationshipSpaceMemberSummary struct {
+	UserID      string
+	DisplayName string
+	Identifier  string
+}
+
 var (
 	ErrInviteNotFound = errors.New("invite not found")
 )
@@ -412,6 +418,39 @@ func (r *Repository) ListRelationshipLevelProgressBySpace(ctx context.Context, u
 			&it.CreatedAt,
 			&it.UpdatedAt,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, it)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+func (r *Repository) ListRelationshipSpaceMembers(ctx context.Context, userID, spaceID string) ([]RelationshipSpaceMemberSummary, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT u.id, u.display_name, u.identifier
+		FROM relationship_space_members me
+		JOIN relationship_space_members m
+		  ON m.relationship_space_id = me.relationship_space_id
+		 AND m.membership_status = 'active'
+		JOIN users u ON u.id = m.user_id
+		WHERE me.relationship_space_id = $1
+		  AND me.user_id = $2
+		  AND me.membership_status = 'active'
+		  AND u.deleted_at IS NULL
+		ORDER BY m.joined_at ASC
+	`, spaceID, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := make([]RelationshipSpaceMemberSummary, 0)
+	for rows.Next() {
+		var it RelationshipSpaceMemberSummary
+		if err := rows.Scan(&it.UserID, &it.DisplayName, &it.Identifier); err != nil {
 			return nil, err
 		}
 		items = append(items, it)

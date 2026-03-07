@@ -315,6 +315,33 @@ func (r *Repository) UpsertSignedPrekey(ctx context.Context, deviceID string, re
 	return tx.Commit(ctx)
 }
 
+func (r *Repository) UpsertKyberPrekey(ctx context.Context, deviceID string, req KyberPrekeyRequest) error {
+	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err = tx.Exec(ctx, `
+		UPDATE kyber_prekeys
+		SET is_active = FALSE, revoked_at = now()
+		WHERE device_id = $1 AND is_active = TRUE AND revoked_at IS NULL
+	`, deviceID); err != nil {
+		return err
+	}
+
+	if _, err = tx.Exec(ctx, `
+		INSERT INTO kyber_prekeys (device_id, key_id, public_key, signature, is_active)
+		VALUES ($1, $2, $3, $4, TRUE)
+		ON CONFLICT (device_id, key_id)
+		DO UPDATE SET public_key = EXCLUDED.public_key, signature = EXCLUDED.signature, is_active = TRUE, revoked_at = NULL
+	`, deviceID, req.KeyID, req.PublicKey, req.Signature); err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
+}
+
 func (r *Repository) InsertOneTimePrekeys(ctx context.Context, deviceID string, prekeys []OneTimePrekey) (int64, error) {
 	var inserted int64
 	for _, k := range prekeys {
@@ -380,9 +407,11 @@ func (r *Repository) GetPrekeyBundle(ctx context.Context, targetUserID string) (
 
 	rows, err := tx.Query(ctx, `
 		SELECT d.id, d.registration_id, d.identity_key_public,
-	       sp.key_id, sp.public_key, sp.signature
+	       sp.key_id, sp.public_key, sp.signature,
+	       kp.key_id, kp.public_key, kp.signature
 		FROM devices d
 		JOIN signed_prekeys sp ON sp.device_id = d.id AND sp.is_active = TRUE AND sp.revoked_at IS NULL
+		JOIN kyber_prekeys kp ON kp.device_id = d.id AND kp.is_active = TRUE AND kp.revoked_at IS NULL
 		WHERE d.user_id = $1 AND d.is_active = TRUE AND d.revoked_at IS NULL
 	`, targetUserID)
 	if err != nil {
@@ -393,7 +422,17 @@ func (r *Repository) GetPrekeyBundle(ctx context.Context, targetUserID string) (
 	resp := PrekeyBundleResponse{UserID: targetUserID, Devices: []DevicePrekeyBundle{}}
 	for rows.Next() {
 		var d DevicePrekeyBundle
-		if err = rows.Scan(&d.DeviceID, &d.RegistrationID, &d.IdentityKeyPublic, &d.SignedPrekey.KeyID, &d.SignedPrekey.PublicKey, &d.SignedPrekey.Signature); err != nil {
+		if err = rows.Scan(
+			&d.DeviceID,
+			&d.RegistrationID,
+			&d.IdentityKeyPublic,
+			&d.SignedPrekey.KeyID,
+			&d.SignedPrekey.PublicKey,
+			&d.SignedPrekey.Signature,
+			&d.KyberPrekey.KeyID,
+			&d.KyberPrekey.PublicKey,
+			&d.KyberPrekey.Signature,
+		); err != nil {
 			return PrekeyBundleResponse{}, err
 		}
 		resp.Devices = append(resp.Devices, d)

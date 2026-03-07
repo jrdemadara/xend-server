@@ -60,6 +60,12 @@ type relationshipLevelProgressResponse struct {
 	UpdatedAt           int64  `json:"updated_at"`
 }
 
+type relationshipSpaceMemberResponse struct {
+	UserID      string `json:"user_id"`
+	DisplayName string `json:"display_name"`
+	Identifier  string `json:"identifier"`
+}
+
 type inviteOutboxResponse struct {
 	InviteID          string  `json:"invite_id"`
 	InviteeIdentifier string  `json:"invitee_identifier"`
@@ -392,6 +398,36 @@ func (h *RelationshipHandler) ListLevelProgress(w http.ResponseWriter, r *http.R
 			UnlockedAt:          timeToUnixPtr(it.UnlockedAt),
 			CreatedAt:           it.CreatedAt.Unix(),
 			UpdatedAt:           it.UpdatedAt.Unix(),
+		})
+	}
+	httputil.JSON(w, http.StatusOK, map[string]any{"items": resp})
+}
+
+func (h *RelationshipHandler) ListMembers(w http.ResponseWriter, r *http.Request) {
+	claims, ok := claimsFromContext(r.Context())
+	if !ok {
+		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
+		return
+	}
+
+	spaceID := strings.TrimSpace(r.PathValue("space_id"))
+	if spaceID == "" {
+		httputil.Error(w, http.StatusBadRequest, "invalid_request", "space_id is required")
+		return
+	}
+
+	items, err := h.repo.ListRelationshipSpaceMembers(r.Context(), claims.UserID, spaceID)
+	if err != nil {
+		httputil.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
+		return
+	}
+
+	resp := make([]relationshipSpaceMemberResponse, 0, len(items))
+	for _, it := range items {
+		resp = append(resp, relationshipSpaceMemberResponse{
+			UserID:      it.UserID,
+			DisplayName: it.DisplayName,
+			Identifier:  it.Identifier,
 		})
 	}
 	httputil.JSON(w, http.StatusOK, map[string]any{"items": resp})

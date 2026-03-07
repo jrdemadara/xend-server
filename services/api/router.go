@@ -64,6 +64,7 @@ func NewRouter(authHandler *auth.Handler, protectedAuthHandler *ProtectedAuthHan
 			protected.Route("/devices", func(dr chi.Router) {
 				dr.Post("/register", deviceHandler.RegisterDevice)
 				dr.Put("/{device_id}/signed-prekey", deviceHandler.UpsertSignedPrekey)
+				dr.Put("/{device_id}/kyber-prekey", deviceHandler.UpsertKyberPrekey)
 				dr.Post("/{device_id}/one-time-prekeys/batch", deviceHandler.UploadOneTimePrekeys)
 				dr.Post("/{device_id}/push-token", deviceHandler.UpsertPushToken)
 			})
@@ -80,6 +81,7 @@ func NewRouter(authHandler *auth.Handler, protectedAuthHandler *ProtectedAuthHan
 				sr.Get("/", relationshipHandler.ListSpaces)
 				sr.Get("/levels", relationshipHandler.ListLevels)
 				sr.Get("/{space_id}/level-progress", relationshipHandler.ListLevelProgress)
+				sr.Get("/{space_id}/members", relationshipHandler.ListMembers)
 			})
 
 			protected.Route("/presence", func(pr chi.Router) {

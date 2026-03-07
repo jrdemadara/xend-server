@@ -13,6 +13,12 @@ type SignedPrekeyRequest struct {
 	Signature string `json:"signature"`
 }
 
+type KyberPrekeyRequest struct {
+	KeyID     int    `json:"key_id"`
+	PublicKey string `json:"public_key"`
+	Signature string `json:"signature"`
+}
+
 type OneTimePrekey struct {
 	KeyID     int    `json:"key_id"`
 	PublicKey string `json:"public_key"`
@@ -32,10 +38,17 @@ type DevicePrekeyBundle struct {
 	RegistrationID    int            `json:"registration_id"`
 	IdentityKeyPublic string         `json:"identity_key_public"`
 	SignedPrekey      SignedPrekey   `json:"signed_prekey"`
+	KyberPrekey       KyberPrekey    `json:"kyber_prekey"`
 	OneTimePrekey     *OneTimePrekey `json:"one_time_prekey,omitempty"`
 }
 
 type SignedPrekey struct {
+	KeyID     int    `json:"key_id"`
+	PublicKey string `json:"public_key"`
+	Signature string `json:"signature"`
+}
+
+type KyberPrekey struct {
 	KeyID     int    `json:"key_id"`
 	PublicKey string `json:"public_key"`
 	Signature string `json:"signature"`
