@@ -1,6 +1,7 @@
 package realtime
 
 import (
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -11,20 +12,23 @@ import (
 	"xend.chat/m/internal/presence"
 	internalrealtime "xend.chat/m/internal/realtime"
 	"xend.chat/m/pkg/httputil"
+	"xend.chat/m/pkg/wsutil"
 )
 
 type Handler struct {
 	tokens   *auth.TokenManager
 	hub      *internalrealtime.Hub
 	presence *presence.Service
+	repo     *auth.Repository
 	upgrader websocket.Upgrader
 }
 
-func NewHandler(tokens *auth.TokenManager, hub *internalrealtime.Hub, presenceSvc *presence.Service) *Handler {
+func NewHandler(tokens *auth.TokenManager, hub *internalrealtime.Hub, presenceSvc *presence.Service, repo *auth.Repository) *Handler {
 	return &Handler{
 		tokens:   tokens,
 		hub:      hub,
 		presence: presenceSvc,
+		repo:     repo,
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
@@ -59,6 +63,7 @@ func (h *Handler) ServeWS(w http.ResponseWriter, r *http.Request) {
 	if h.presence != nil {
 		_ = h.presence.MarkOnline(r.Context(), claims.UserID, claims.DeviceID)
 	}
+	h.broadcastPresence(r, claims.UserID, true)
 	defer func() {
 		h.hub.Remove(claims.UserID, claims.DeviceID)
 		stats := h.hub.Stats()
@@ -66,6 +71,7 @@ func (h *Handler) ServeWS(w http.ResponseWriter, r *http.Request) {
 		if h.presence != nil {
 			_ = h.presence.MarkOffline(r.Context(), claims.UserID, claims.DeviceID)
 		}
+		h.broadcastPresence(r, claims.UserID, false)
 	}()
 
 	_ = conn.SetReadDeadline(time.Now().Add(70 * time.Second))
@@ -83,9 +89,11 @@ func (h *Handler) ServeWS(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer close(done)
 		for {
-			if _, _, err := conn.ReadMessage(); err != nil {
+			_, data, err := conn.ReadMessage()
+			if err != nil {
 				return
 			}
+			h.handleClientEvent(r, claims.UserID, data)
 		}
 	}()
 
@@ -102,6 +110,58 @@ func (h *Handler) ServeWS(w http.ResponseWriter, r *http.Request) {
 				_ = h.presence.Heartbeat(r.Context(), claims.UserID, claims.DeviceID)
 			}
 		}
+	}
+}
+
+type clientEvent struct {
+	Type    string            `json:"type"`
+	Payload map[string]string `json:"payload"`
+}
+
+func (h *Handler) handleClientEvent(r *http.Request, senderUserID string, data []byte) {
+	if h.repo == nil {
+		return
+	}
+	var event clientEvent
+	if err := json.Unmarshal(data, &event); err != nil {
+		return
+	}
+	if event.Type != "typing" {
+		return
+	}
+	conversationID := strings.TrimSpace(event.Payload["conversation_id"])
+	if conversationID == "" {
+		return
+	}
+	recipientUserIDs, err := h.repo.ListConversationRecipientUserIDs(r.Context(), conversationID, senderUserID)
+	if err != nil {
+		return
+	}
+	payload := map[string]string{
+		"conversation_id": conversationID,
+		"sender_user_id":  senderUserID,
+		"is_typing":       strings.TrimSpace(event.Payload["is_typing"]),
+	}
+	for _, recipientUserID := range recipientUserIDs {
+		h.hub.SendToUser(recipientUserID, wsutil.NewEvent("typing", payload))
+	}
+}
+
+func (h *Handler) broadcastPresence(r *http.Request, userID string, isOnline bool) {
+	if h.repo == nil || h.hub == nil {
+		return
+	}
+	relatedUserIDs, err := h.repo.ListRelatedUserIDs(r.Context(), userID)
+	if err != nil {
+		return
+	}
+	payload := map[string]any{
+		"user_id":    userID,
+		"is_online":  isOnline,
+		"updated_at": time.Now().UTC().Unix(),
+	}
+	for _, relatedUserID := range relatedUserIDs {
+		h.hub.SendToUser(relatedUserID, wsutil.NewEvent("presence_updated", payload))
 	}
 }
 

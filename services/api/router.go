@@ -59,6 +59,7 @@ func NewRouter(authHandler *auth.Handler, protectedAuthHandler *ProtectedAuthHan
 					})
 				})
 				ur.Get("/{user_id}/prekeys", deviceHandler.GetPrekeys)
+				ur.Get("/{user_id}/presence", presenceHandler.GetUserPresence)
 			})
 
 			protected.Route("/devices", func(dr chi.Router) {

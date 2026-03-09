@@ -378,6 +378,33 @@ func (r *Repository) ListConversationRecipientUserIDs(ctx context.Context, conve
 	return items, nil
 }
 
+func (r *Repository) ListRelatedUserIDs(ctx context.Context, userID string) ([]string, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT DISTINCT other.user_id
+		FROM relationship_space_members me
+		JOIN relationship_space_members other
+		  ON other.relationship_space_id = me.relationship_space_id
+		WHERE me.user_id = $1
+		  AND me.membership_status = 'active'
+		  AND other.membership_status = 'active'
+		  AND other.user_id <> $1
+	`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := make([]string, 0, 4)
+	for rows.Next() {
+		var relatedUserID string
+		if err := rows.Scan(&relatedUserID); err != nil {
+			return nil, err
+		}
+		items = append(items, relatedUserID)
+	}
+	return items, rows.Err()
+}
+
 func (r *Repository) MarkMessagesDeliveredForDevice(ctx context.Context, userID, deviceID string) ([]string, error) {
 	rows, err := r.db.Query(ctx, `
 		WITH updated AS (

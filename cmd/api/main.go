@@ -61,9 +61,9 @@ func main() {
 	protectedAuthHandler := api.NewProtectedAuthHandler(svc)
 	deviceHandler := api.NewDeviceHandler(repo)
 	presenceSvc := presence.NewService(redisClient)
-	presenceHandler := api.NewPresenceHandler(presenceSvc)
+	presenceHandler := api.NewPresenceHandler(presenceSvc, repo)
 	hub := realtime.NewHub()
-	realtimeHandler := servicerealtime.NewHandler(tm, hub, presenceSvc)
+	realtimeHandler := servicerealtime.NewHandler(tm, hub, presenceSvc, repo)
 	var pushNotifier notify.PushNotifier = notify.NoopPushNotifier{}
 	if cfg.FirebaseCredentialsFile != "" {
 		fcmNotifier, fcmErr := notify.NewFCMNotifier(cfg.FirebaseCredentialsFile)
