@@ -23,10 +23,14 @@ type RelationshipInvite struct {
 
 type RelationshipSpaceSummary struct {
 	RelationshipSpaceID string
+	ConversationID      string
 	Name                *string
 	CreatedByUserID     string
 	CurrentLevel        int16
 	CurrentLevelName    string
+	IsDefault           bool
+	AccessHint          *string
+	AccessConfigured    bool
 	ArchivedAt          *time.Time
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
@@ -63,7 +67,9 @@ type RelationshipSpaceMemberSummary struct {
 }
 
 var (
-	ErrInviteNotFound = errors.New("invite not found")
+	ErrInviteNotFound                  = errors.New("invite not found")
+	ErrRelationshipSpaceNotFound       = errors.New("relationship space not found")
+	ErrRelationshipSpaceAccessNotFound = errors.New("relationship space access not found")
 )
 
 func (r *Repository) CreateRelationshipInviteByIdentifier(ctx context.Context, inviterUserID, inviteeIdentifier string, note *string) (string, string, string, error) {
@@ -251,6 +257,14 @@ func (r *Repository) AcceptRelationshipInvite(ctx context.Context, inviteID, inv
 		`, spaceID, inviterUserID); err != nil {
 			return "", "", "", err
 		}
+
+		if _, err = tx.Exec(ctx, `
+			INSERT INTO user_space_preferences (user_id, default_relationship_space_id)
+			VALUES ($1, $2)
+			ON CONFLICT (user_id) DO NOTHING
+		`, inviterUserID, spaceID); err != nil {
+			return "", "", "", err
+		}
 	}
 
 	if _, err = tx.Exec(ctx, `
@@ -264,6 +278,14 @@ func (r *Repository) AcceptRelationshipInvite(ctx context.Context, inviteID, inv
 			left_at = NULL,
 			joined_at = now()
 	`, spaceID, inviteeUserID, inviterUserID); err != nil {
+		return "", "", "", err
+	}
+
+	if _, err = tx.Exec(ctx, `
+		INSERT INTO user_space_preferences (user_id, default_relationship_space_id)
+		VALUES ($1, $2)
+		ON CONFLICT (user_id) DO NOTHING
+	`, inviteeUserID, spaceID); err != nil {
 		return "", "", "", err
 	}
 
@@ -315,16 +337,27 @@ func (r *Repository) DeclineRelationshipInvite(ctx context.Context, inviteID, in
 func (r *Repository) ListRelationshipSpacesByUser(ctx context.Context, userID string) ([]RelationshipSpaceSummary, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT rs.id,
+		       COALESCE(c.id::text, ''),
 		       rs.name,
 		       rs.created_by_user_id,
 		       rs.current_level,
 		       COALESCE(rl.name, 'Tease') AS current_level_name,
+		       COALESCE(usp.default_relationship_space_id = rs.id, false) AS is_default,
+		       rsma.access_hint,
+		       COALESCE(rsma.access_passphrase_hash IS NOT NULL AND rsma.access_passphrase_hash <> '', false) AS access_configured,
 		       rs.archived_at,
 		       rs.created_at,
 		       rs.updated_at
 		FROM relationship_spaces rs
 		JOIN relationship_space_members rsm
 		  ON rsm.relationship_space_id = rs.id
+		LEFT JOIN conversations c
+		  ON c.relationship_space_id = rs.id
+		LEFT JOIN user_space_preferences usp
+		  ON usp.user_id = rsm.user_id
+		LEFT JOIN relationship_space_member_access rsma
+		  ON rsma.relationship_space_id = rs.id
+		 AND rsma.user_id = rsm.user_id
 		LEFT JOIN relationship_levels rl
 		  ON rl.level = rs.current_level
 		WHERE rsm.user_id = $1
@@ -341,10 +374,14 @@ func (r *Repository) ListRelationshipSpacesByUser(ctx context.Context, userID st
 		var it RelationshipSpaceSummary
 		if err := rows.Scan(
 			&it.RelationshipSpaceID,
+			&it.ConversationID,
 			&it.Name,
 			&it.CreatedByUserID,
 			&it.CurrentLevel,
 			&it.CurrentLevelName,
+			&it.IsDefault,
+			&it.AccessHint,
+			&it.AccessConfigured,
 			&it.ArchivedAt,
 			&it.CreatedAt,
 			&it.UpdatedAt,
@@ -357,6 +394,132 @@ func (r *Repository) ListRelationshipSpacesByUser(ctx context.Context, userID st
 		return nil, err
 	}
 	return items, nil
+}
+
+func (r *Repository) SetDefaultRelationshipSpace(ctx context.Context, userID, spaceID string) error {
+	tag, err := r.db.Exec(ctx, `
+		INSERT INTO user_space_preferences (user_id, default_relationship_space_id)
+		SELECT $1, $2
+		WHERE EXISTS (
+			SELECT 1
+			FROM relationship_space_members
+			WHERE relationship_space_id = $2
+			  AND user_id = $1
+			  AND membership_status = 'active'
+		)
+		ON CONFLICT (user_id)
+		DO UPDATE SET default_relationship_space_id = EXCLUDED.default_relationship_space_id
+	`, userID, spaceID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrRelationshipSpaceNotFound
+	}
+	return nil
+}
+
+func (r *Repository) UpsertRelationshipSpaceAccess(ctx context.Context, userID, spaceID, passphrase string, hint *string) error {
+	passphraseHash, err := HashPassword(passphrase)
+	if err != nil {
+		return err
+	}
+
+	tag, err := r.db.Exec(ctx, `
+		INSERT INTO relationship_space_member_access (
+			relationship_space_id,
+			user_id,
+			access_passphrase_hash,
+			access_hint
+		)
+		SELECT $2, $1, $3, $4
+		WHERE EXISTS (
+			SELECT 1
+			FROM relationship_space_members
+			WHERE relationship_space_id = $2
+			  AND user_id = $1
+			  AND membership_status = 'active'
+		)
+		ON CONFLICT (relationship_space_id, user_id)
+		DO UPDATE SET
+			access_passphrase_hash = EXCLUDED.access_passphrase_hash,
+			access_hint = EXCLUDED.access_hint
+	`, userID, spaceID, passphraseHash, hint)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrRelationshipSpaceNotFound
+	}
+	return nil
+}
+
+func (r *Repository) UnlockRelationshipSpace(ctx context.Context, userID, passphrase string) (RelationshipSpaceSummary, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT rs.id,
+		       COALESCE(c.id::text, ''),
+		       rs.name,
+		       rs.created_by_user_id,
+		       rs.current_level,
+		       COALESCE(rl.name, 'Tease') AS current_level_name,
+		       COALESCE(usp.default_relationship_space_id = rs.id, false) AS is_default,
+		       rsma.access_hint,
+		       COALESCE(rsma.access_passphrase_hash IS NOT NULL AND rsma.access_passphrase_hash <> '', false) AS access_configured,
+		       rsma.access_passphrase_hash,
+		       rs.archived_at,
+		       rs.created_at,
+		       rs.updated_at
+		FROM relationship_spaces rs
+		JOIN relationship_space_members rsm
+		  ON rsm.relationship_space_id = rs.id
+		JOIN relationship_space_member_access rsma
+		  ON rsma.relationship_space_id = rs.id
+		 AND rsma.user_id = rsm.user_id
+		LEFT JOIN user_space_preferences usp
+		  ON usp.user_id = rsm.user_id
+		LEFT JOIN conversations c
+		  ON c.relationship_space_id = rs.id
+		LEFT JOIN relationship_levels rl
+		  ON rl.level = rs.current_level
+		WHERE rsm.user_id = $1
+		  AND rsm.membership_status = 'active'
+		  AND COALESCE(usp.default_relationship_space_id = rs.id, false) = false
+		  AND rsma.access_passphrase_hash IS NOT NULL
+		ORDER BY rs.created_at ASC
+	`, userID)
+	if err != nil {
+		return RelationshipSpaceSummary{}, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var item RelationshipSpaceSummary
+		var passphraseHash string
+		if err := rows.Scan(
+			&item.RelationshipSpaceID,
+			&item.ConversationID,
+			&item.Name,
+			&item.CreatedByUserID,
+			&item.CurrentLevel,
+			&item.CurrentLevelName,
+			&item.IsDefault,
+			&item.AccessHint,
+			&item.AccessConfigured,
+			&passphraseHash,
+			&item.ArchivedAt,
+			&item.CreatedAt,
+			&item.UpdatedAt,
+		); err != nil {
+			return RelationshipSpaceSummary{}, err
+		}
+		if VerifyPassword(passphraseHash, passphrase) == nil {
+			return item, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return RelationshipSpaceSummary{}, err
+	}
+	return RelationshipSpaceSummary{}, ErrRelationshipSpaceAccessNotFound
 }
 
 func (r *Repository) ListRelationshipLevels(ctx context.Context) ([]RelationshipLevel, error) {

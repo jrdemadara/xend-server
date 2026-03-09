@@ -11,7 +11,7 @@ import (
 	servicerealtime "xend.chat/m/services/realtime"
 )
 
-func NewRouter(authHandler *auth.Handler, protectedAuthHandler *ProtectedAuthHandler, deviceHandler *DeviceHandler, relationshipHandler *RelationshipHandler, presenceHandler *PresenceHandler, realtimeHandler *servicerealtime.Handler, tokens *auth.TokenManager, redisClient *goredis.Client) http.Handler {
+func NewRouter(authHandler *auth.Handler, protectedAuthHandler *ProtectedAuthHandler, deviceHandler *DeviceHandler, relationshipHandler *RelationshipHandler, messageHandler *MessageHandler, presenceHandler *PresenceHandler, realtimeHandler *servicerealtime.Handler, tokens *auth.TokenManager, redisClient *goredis.Client) http.Handler {
 	r := chi.NewRouter()
 	rl := newAuthRateLimiter(redisClient, 30, time.Minute)
 
@@ -80,8 +80,21 @@ func NewRouter(authHandler *auth.Handler, protectedAuthHandler *ProtectedAuthHan
 			protected.Route("/relationship-spaces", func(sr chi.Router) {
 				sr.Get("/", relationshipHandler.ListSpaces)
 				sr.Get("/levels", relationshipHandler.ListLevels)
+				sr.Post("/unlock", relationshipHandler.UnlockSpace)
 				sr.Get("/{space_id}/level-progress", relationshipHandler.ListLevelProgress)
 				sr.Get("/{space_id}/members", relationshipHandler.ListMembers)
+				sr.Put("/{space_id}/default", relationshipHandler.SetDefaultSpace)
+				sr.Put("/{space_id}/access-lock", relationshipHandler.ConfigureSpaceAccess)
+			})
+
+			protected.Route("/conversations", func(cr chi.Router) {
+				cr.Get("/{conversation_id}/messages", messageHandler.ListByConversation)
+				cr.Post("/{conversation_id}/messages", messageHandler.Send)
+				cr.Post("/{conversation_id}/read", messageHandler.MarkConversationRead)
+			})
+
+			protected.Route("/messages", func(mr chi.Router) {
+				mr.Get("/sync", messageHandler.Sync)
 			})
 
 			protected.Route("/presence", func(pr chi.Router) {

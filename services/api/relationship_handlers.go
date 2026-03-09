@@ -35,10 +35,14 @@ type createInviteRequest struct {
 
 type relationshipSpaceResponse struct {
 	RelationshipSpaceID string  `json:"relationship_space_id"`
+	ConversationID      string  `json:"conversation_id"`
 	Name                *string `json:"name,omitempty"`
 	CreatedByUserID     string  `json:"created_by_user_id"`
 	CurrentLevel        int16   `json:"current_level"`
 	CurrentLevelName    string  `json:"current_level_name"`
+	IsDefault           bool    `json:"is_default"`
+	AccessHint          *string `json:"access_hint,omitempty"`
+	AccessConfigured    bool    `json:"access_configured"`
 	ArchivedAt          *int64  `json:"archived_at,omitempty"`
 	CreatedAt           int64   `json:"created_at"`
 	UpdatedAt           int64   `json:"updated_at"`
@@ -64,6 +68,17 @@ type relationshipSpaceMemberResponse struct {
 	UserID      string `json:"user_id"`
 	DisplayName string `json:"display_name"`
 	Identifier  string `json:"identifier"`
+}
+
+type setDefaultSpaceRequest struct{}
+
+type configureSpaceAccessRequest struct {
+	Passphrase string  `json:"passphrase"`
+	Hint       *string `json:"hint"`
+}
+
+type unlockSpaceRequest struct {
+	Passphrase string `json:"passphrase"`
 }
 
 type inviteOutboxResponse struct {
@@ -338,10 +353,14 @@ func (h *RelationshipHandler) ListSpaces(w http.ResponseWriter, r *http.Request)
 	for _, it := range items {
 		resp = append(resp, relationshipSpaceResponse{
 			RelationshipSpaceID: it.RelationshipSpaceID,
+			ConversationID:      it.ConversationID,
 			Name:                it.Name,
 			CreatedByUserID:     it.CreatedByUserID,
 			CurrentLevel:        it.CurrentLevel,
 			CurrentLevelName:    it.CurrentLevelName,
+			IsDefault:           it.IsDefault,
+			AccessHint:          it.AccessHint,
+			AccessConfigured:    it.AccessConfigured,
 			ArchivedAt:          timeToUnixPtr(it.ArchivedAt),
 			CreatedAt:           it.CreatedAt.Unix(),
 			UpdatedAt:           it.UpdatedAt.Unix(),
@@ -431,6 +450,109 @@ func (h *RelationshipHandler) ListMembers(w http.ResponseWriter, r *http.Request
 		})
 	}
 	httputil.JSON(w, http.StatusOK, map[string]any{"items": resp})
+}
+
+func (h *RelationshipHandler) SetDefaultSpace(w http.ResponseWriter, r *http.Request) {
+	claims, ok := claimsFromContext(r.Context())
+	if !ok {
+		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
+		return
+	}
+
+	spaceID := strings.TrimSpace(r.PathValue("space_id"))
+	if spaceID == "" {
+		httputil.Error(w, http.StatusBadRequest, "invalid_request", "space_id is required")
+		return
+	}
+
+	if err := h.repo.SetDefaultRelationshipSpace(r.Context(), claims.UserID, spaceID); err != nil {
+		if errors.Is(err, auth.ErrRelationshipSpaceNotFound) {
+			httputil.Error(w, http.StatusNotFound, "not_found", "relationship space not found")
+			return
+		}
+		httputil.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
+		return
+	}
+	httputil.JSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (h *RelationshipHandler) ConfigureSpaceAccess(w http.ResponseWriter, r *http.Request) {
+	claims, ok := claimsFromContext(r.Context())
+	if !ok {
+		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
+		return
+	}
+
+	spaceID := strings.TrimSpace(r.PathValue("space_id"))
+	if spaceID == "" {
+		httputil.Error(w, http.StatusBadRequest, "invalid_request", "space_id is required")
+		return
+	}
+
+	var req configureSpaceAccessRequest
+	if err := httputil.DecodeJSON(r, &req); err != nil {
+		httputil.Error(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		return
+	}
+	req.Passphrase = strings.TrimSpace(req.Passphrase)
+	if len(req.Passphrase) < 4 {
+		httputil.Error(w, http.StatusBadRequest, "invalid_request", "passphrase must be at least 4 characters")
+		return
+	}
+
+	if err := h.repo.UpsertRelationshipSpaceAccess(r.Context(), claims.UserID, spaceID, req.Passphrase, req.Hint); err != nil {
+		if errors.Is(err, auth.ErrRelationshipSpaceNotFound) {
+			httputil.Error(w, http.StatusNotFound, "not_found", "relationship space not found")
+			return
+		}
+		httputil.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
+		return
+	}
+	httputil.JSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (h *RelationshipHandler) UnlockSpace(w http.ResponseWriter, r *http.Request) {
+	claims, ok := claimsFromContext(r.Context())
+	if !ok {
+		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
+		return
+	}
+
+	var req unlockSpaceRequest
+	if err := httputil.DecodeJSON(r, &req); err != nil {
+		httputil.Error(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		return
+	}
+	req.Passphrase = strings.TrimSpace(req.Passphrase)
+	if req.Passphrase == "" {
+		httputil.Error(w, http.StatusBadRequest, "invalid_request", "passphrase is required")
+		return
+	}
+
+	item, err := h.repo.UnlockRelationshipSpace(r.Context(), claims.UserID, req.Passphrase)
+	if err != nil {
+		if errors.Is(err, auth.ErrRelationshipSpaceAccessNotFound) {
+			httputil.Error(w, http.StatusNotFound, "not_found", "hidden space not found")
+			return
+		}
+		httputil.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
+		return
+	}
+
+	httputil.JSON(w, http.StatusOK, relationshipSpaceResponse{
+		RelationshipSpaceID: item.RelationshipSpaceID,
+		ConversationID:      item.ConversationID,
+		Name:                item.Name,
+		CreatedByUserID:     item.CreatedByUserID,
+		CurrentLevel:        item.CurrentLevel,
+		CurrentLevelName:    item.CurrentLevelName,
+		IsDefault:           item.IsDefault,
+		AccessHint:          item.AccessHint,
+		AccessConfigured:    item.AccessConfigured,
+		ArchivedAt:          timeToUnixPtr(item.ArchivedAt),
+		CreatedAt:           item.CreatedAt.Unix(),
+		UpdatedAt:           item.UpdatedAt.Unix(),
+	})
 }
 
 func timeToUnixPtr(v *time.Time) *int64 {

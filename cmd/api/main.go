@@ -77,7 +77,8 @@ func main() {
 		logger.Info("fcm notifier disabled", "reason", "FIREBASE_CREDENTIALS_FILE is empty")
 	}
 	relationshipHandler := api.NewRelationshipHandler(repo, emailEnqueuer, hub, pushNotifier)
-	router := api.NewRouter(h, protectedAuthHandler, deviceHandler, relationshipHandler, presenceHandler, realtimeHandler, tm, redisClient)
+	messageHandler := api.NewMessageHandler(repo, hub, pushNotifier)
+	router := api.NewRouter(h, protectedAuthHandler, deviceHandler, relationshipHandler, messageHandler, presenceHandler, realtimeHandler, tm, redisClient)
 
 	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: router, ReadHeaderTimeout: 5 * time.Second}
 	go func() {
