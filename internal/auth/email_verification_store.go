@@ -45,7 +45,7 @@ func (s *RedisEmailVerificationStore) Consume(ctx context.Context, email, tokenH
 
 func (s *RedisEmailVerificationStore) AllowSend(ctx context.Context, email, clientIP string) (bool, error) {
 	cooldownKey := fmt.Sprintf("auth:email_verify:cooldown:%s", email)
-	ok, err := s.client.SetNX(ctx, cooldownKey, "1", 60*time.Second).Result()
+	ok, err := s.client.SetNX(ctx, cooldownKey, "1", 15*time.Second).Result()
 	if err != nil {
 		return false, err
 	}
@@ -63,7 +63,7 @@ func (s *RedisEmailVerificationStore) AllowSend(ctx context.Context, email, clie
 			return false, err
 		}
 	}
-	if emailCount > 5 {
+	if emailCount > 20 {
 		return false, nil
 	}
 
