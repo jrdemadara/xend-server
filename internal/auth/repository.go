@@ -57,7 +57,7 @@ func (r *Repository) CreateUserWithDevice(ctx context.Context, req RegisterReque
 			identifier_rotation_days,
 			identifier_rotates_at
 		)
-		VALUES ($1, $2, $3, TRUE, 1, now() + interval '1 minute')
+		VALUES ($1, $2, $3, TRUE, 30, now() + interval '30 days')
 		RETURNING id
 	`, req.DisplayName, req.Email, identifier).Scan(&userID); err != nil {
 		return "", "", err
@@ -143,7 +143,7 @@ func (r *Repository) CreateUserForOAuth(ctx context.Context, displayName, email,
 			identifier_rotation_days,
 			identifier_rotates_at
 		)
-		VALUES ($1, $2, $3, now(), TRUE, 1, now() + interval '1 minute')
+		VALUES ($1, $2, $3, now(), TRUE, 30, now() + interval '30 days')
 		RETURNING id
 	`, displayName, email, identifier).Scan(&userID)
 	return userID, err
