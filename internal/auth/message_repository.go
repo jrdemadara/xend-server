@@ -17,6 +17,7 @@ type MessageRecord struct {
 	ClientMessageID string
 	MessageType     string
 	Ciphertext      string
+	ReplyToMessageID *string
 	SenderTimestamp *time.Time
 	CreatedAt       time.Time
 	ReceiptUserID   *string
@@ -34,6 +35,7 @@ func (r *Repository) CreateConversationMessage(
 	messageType string,
 	ciphertext string,
 	senderTimestamp *time.Time,
+	replyToMessageID *string,
 ) (MessageRecord, error) {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
@@ -41,7 +43,7 @@ func (r *Repository) CreateConversationMessage(
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	message, err := r.insertConversationMessageTx(ctx, tx, userID, deviceID, conversationID, clientMessageID, messageType, ciphertext, senderTimestamp)
+	message, err := r.insertConversationMessageTx(ctx, tx, userID, deviceID, conversationID, clientMessageID, messageType, ciphertext, senderTimestamp, replyToMessageID)
 	if err == nil {
 		recipients, recipientErr := r.listConversationRecipientDevicesTx(ctx, tx, conversationID, userID)
 		if recipientErr != nil {
@@ -76,6 +78,7 @@ func (r *Repository) insertConversationMessageTx(
 	messageType string,
 	ciphertext string,
 	senderTimestamp *time.Time,
+	replyToMessageID *string,
 ) (MessageRecord, error) {
 	var item MessageRecord
 	err := tx.QueryRow(ctx, `
@@ -86,11 +89,12 @@ func (r *Repository) insertConversationMessageTx(
 			client_message_id,
 			message_type,
 			ciphertext,
-			sender_timestamp
+			sender_timestamp,
+			reply_to_message_id
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		RETURNING id, conversation_id, sender_user_id, sender_device_id, client_message_id, message_type, ciphertext, sender_timestamp, created_at
-	`, conversationID, userID, deviceID, clientMessageID, messageType, ciphertext, senderTimestamp).Scan(
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		RETURNING id, conversation_id, sender_user_id, sender_device_id, client_message_id, message_type, ciphertext, reply_to_message_id, sender_timestamp, created_at
+	`, conversationID, userID, deviceID, clientMessageID, messageType, ciphertext, senderTimestamp, replyToMessageID).Scan(
 		&item.MessageID,
 		&item.ConversationID,
 		&item.SenderUserID,
@@ -98,6 +102,7 @@ func (r *Repository) insertConversationMessageTx(
 		&item.ClientMessageID,
 		&item.MessageType,
 		&item.Ciphertext,
+		&item.ReplyToMessageID,
 		&item.SenderTimestamp,
 		&item.CreatedAt,
 	)
@@ -169,6 +174,7 @@ func (r *Repository) GetConversationMessageByClientID(ctx context.Context, devic
 		       client_message_id,
 		       message_type,
 		       ciphertext,
+		       reply_to_message_id,
 		       sender_timestamp,
 		       created_at
 		FROM messages
@@ -183,6 +189,7 @@ func (r *Repository) GetConversationMessageByClientID(ctx context.Context, devic
 		&item.ClientMessageID,
 		&item.MessageType,
 		&item.Ciphertext,
+		&item.ReplyToMessageID,
 		&item.SenderTimestamp,
 		&item.CreatedAt,
 	)
@@ -205,6 +212,7 @@ func (r *Repository) ListConversationMessages(ctx context.Context, userID, conve
 		       m.client_message_id,
 		       m.message_type,
 		       m.ciphertext,
+		       m.reply_to_message_id,
 		       m.sender_timestamp,
 		       m.created_at,
 		       receipt.recipient_user_id,
@@ -254,6 +262,7 @@ func (r *Repository) ListConversationMessages(ctx context.Context, userID, conve
 			&item.ClientMessageID,
 			&item.MessageType,
 			&item.Ciphertext,
+			&item.ReplyToMessageID,
 			&item.SenderTimestamp,
 			&item.CreatedAt,
 			&item.ReceiptUserID,
@@ -284,6 +293,7 @@ func (r *Repository) ListMessagesForUserSince(ctx context.Context, userID string
 		       m.client_message_id,
 		       m.message_type,
 		       m.ciphertext,
+		       m.reply_to_message_id,
 		       m.sender_timestamp,
 		       m.created_at,
 		       receipt.recipient_user_id,
@@ -332,6 +342,7 @@ func (r *Repository) ListMessagesForUserSince(ctx context.Context, userID string
 			&item.ClientMessageID,
 			&item.MessageType,
 			&item.Ciphertext,
+			&item.ReplyToMessageID,
 			&item.SenderTimestamp,
 			&item.CreatedAt,
 			&item.ReceiptUserID,

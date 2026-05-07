@@ -31,6 +31,7 @@ type sendMessageRequest struct {
 	ClientMessageID string `json:"client_message_id"`
 	MessageType     string `json:"message_type"`
 	Ciphertext      string `json:"ciphertext"`
+	ReplyToMessageID *string `json:"reply_to_message_id"`
 	SenderTimestamp *int64 `json:"sender_timestamp"`
 }
 
@@ -42,6 +43,7 @@ type messageResponse struct {
 	ClientMessageID string `json:"client_message_id"`
 	MessageType     string `json:"message_type"`
 	Ciphertext      string `json:"ciphertext"`
+	ReplyToMessageID *string `json:"reply_to_message_id,omitempty"`
 	SenderTimestamp *int64 `json:"sender_timestamp,omitempty"`
 	CreatedAt       int64  `json:"created_at"`
 	ReceiptUserID   string `json:"receipt_user_id,omitempty"`
@@ -71,6 +73,14 @@ func (h *MessageHandler) Send(w http.ResponseWriter, r *http.Request) {
 	req.ClientMessageID = strings.TrimSpace(req.ClientMessageID)
 	req.MessageType = strings.TrimSpace(req.MessageType)
 	req.Ciphertext = strings.TrimSpace(req.Ciphertext)
+	if req.ReplyToMessageID != nil {
+		trimmed := strings.TrimSpace(*req.ReplyToMessageID)
+		if trimmed == "" {
+			req.ReplyToMessageID = nil
+		} else {
+			req.ReplyToMessageID = &trimmed
+		}
+	}
 	if req.ClientMessageID == "" || req.MessageType == "" || req.Ciphertext == "" {
 		httputil.Error(w, http.StatusBadRequest, "invalid_request", "client_message_id, message_type, and ciphertext are required")
 		return
@@ -91,6 +101,7 @@ func (h *MessageHandler) Send(w http.ResponseWriter, r *http.Request) {
 		req.MessageType,
 		req.Ciphertext,
 		senderTimestamp,
+		req.ReplyToMessageID,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -281,6 +292,7 @@ func toMessageResponse(item auth.MessageRecord) messageResponse {
 		ClientMessageID: item.ClientMessageID,
 		MessageType:     item.MessageType,
 		Ciphertext:      item.Ciphertext,
+		ReplyToMessageID: item.ReplyToMessageID,
 		SenderTimestamp: senderTimestamp,
 		CreatedAt:       item.CreatedAt.Unix(),
 		ReceiptUserID:   receiptUserID,
