@@ -1,14 +1,18 @@
 package auth
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"xend.chat/m/pkg/httputil"
 )
+
+const authResponseDelay = 2 * time.Second
 
 type Handler struct {
 	svc *Service
@@ -25,6 +29,9 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp, err := h.svc.Register(r.Context(), req, clientIP(r))
+	if !delayAuthResponse(r.Context()) {
+		return
+	}
 	if err != nil {
 		h.handleError(w, err)
 		return
@@ -65,6 +72,9 @@ func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp, err := h.svc.Login(r.Context(), req, clientIP(r))
+	if !delayAuthResponse(r.Context()) {
+		return
+	}
 	if err != nil {
 		h.handleError(w, err)
 		return
@@ -135,4 +145,16 @@ func clientIP(r *http.Request) string {
 		return strings.TrimSpace(r.RemoteAddr)
 	}
 	return ip
+}
+
+func delayAuthResponse(ctx context.Context) bool {
+	timer := time.NewTimer(authResponseDelay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
