@@ -20,7 +20,8 @@ var (
 	ErrInvalidToken       = errors.New("invalid token")
 	ErrEmailExists        = errors.New("email already exists")
 	ErrEmailNotVerified   = errors.New("email is not verified")
-	ErrRateLimited        = errors.New("rate limited")
+	ErrLoginRateLimited   = errors.New("login rate limited")
+	ErrVerifyRateLimited  = errors.New("verification rate limited")
 )
 
 type Service struct {
@@ -77,7 +78,7 @@ func (s *Service) Register(ctx context.Context, req RegisterRequest, clientIP st
 				return RegisterResponse{}, ErrEmailExists
 			}
 			if u.EmailVerifiedAt == nil {
-				if resendErr := s.createEmailVerification(ctx, u.ID, req.Email, clientIP); resendErr != nil && !errors.Is(resendErr, ErrRateLimited) {
+				if resendErr := s.createEmailVerification(ctx, u.ID, req.Email, clientIP); resendErr != nil && !errors.Is(resendErr, ErrVerifyRateLimited) {
 					return RegisterResponse{}, resendErr
 				}
 				return RegisterResponse{UserID: u.ID, Email: req.Email, RequiresVerification: true}, nil
@@ -148,7 +149,7 @@ func (s *Service) Login(ctx context.Context, req LoginRequest, clientIP string) 
 			return AuthResponse{}, lockErr
 		}
 		if locked {
-			return AuthResponse{}, ErrRateLimited
+			return AuthResponse{}, ErrLoginRateLimited
 		}
 	}
 
@@ -318,7 +319,7 @@ func (s *Service) createEmailVerification(ctx context.Context, userID, email, cl
 		return err
 	}
 	if !allowed {
-		return ErrRateLimited
+		return ErrVerifyRateLimited
 	}
 
 	raw, hash, err := NewVerificationToken()

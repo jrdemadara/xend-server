@@ -2,6 +2,7 @@ package auth
 
 import (
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -111,11 +112,14 @@ func (h *Handler) handleError(w http.ResponseWriter, err error) {
 		httputil.Error(w, http.StatusBadRequest, "device_not_found", "device_name was not found for this account")
 	case errors.Is(err, ErrEmailNotVerified):
 		httputil.Error(w, http.StatusUnauthorized, "email_not_verified", "email is not verified")
-	case errors.Is(err, ErrRateLimited):
+	case errors.Is(err, ErrLoginRateLimited):
+		httputil.Error(w, http.StatusTooManyRequests, "rate_limited", "too many login attempts, try again later")
+	case errors.Is(err, ErrVerifyRateLimited):
 		httputil.Error(w, http.StatusTooManyRequests, "rate_limited", "too many verification requests, try again later")
 	case errors.Is(err, ErrInvalidToken):
 		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "token is invalid")
 	default:
+		slog.Error("auth request failed", "error", err)
 		httputil.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 	}
 }
