@@ -290,6 +290,22 @@ func (r *Repository) AcceptRelationshipInvite(ctx context.Context, inviteID, inv
 	}
 
 	if _, err = tx.Exec(ctx, `
+		INSERT INTO relationship_space_level_progress (
+			relationship_space_id,
+			level,
+			required_points,
+			current_points,
+			unlocked_at
+		)
+		SELECT $1, rl.level, rl.required_points, 0, now()
+		FROM relationship_levels rl
+		WHERE rl.level = 1
+		ON CONFLICT (relationship_space_id, level) DO NOTHING
+	`, spaceID); err != nil {
+		return "", "", "", err
+	}
+
+	if _, err = tx.Exec(ctx, `
 		UPDATE relationship_invites
 		SET status = 'accepted', responded_at = now(), relationship_space_id = $2
 		WHERE id = $1

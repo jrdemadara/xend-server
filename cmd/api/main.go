@@ -13,6 +13,7 @@ import (
 	"github.com/hibiken/asynq"
 	"xend.chat/m/internal/auth"
 	"xend.chat/m/internal/config"
+	"xend.chat/m/internal/dailycheckin"
 	"xend.chat/m/internal/db"
 	"xend.chat/m/internal/logging"
 	"xend.chat/m/internal/notify"
@@ -77,8 +78,10 @@ func main() {
 		logger.Info("fcm notifier disabled", "reason", "FIREBASE_CREDENTIALS_FILE is empty")
 	}
 	relationshipHandler := api.NewRelationshipHandler(repo, emailEnqueuer, hub, pushNotifier)
+	dailyCheckInRepo := dailycheckin.NewRepository(pool)
+	dailyCheckInHandler := api.NewDailyCheckInHandler(dailyCheckInRepo, hub)
 	messageHandler := api.NewMessageHandler(repo, hub, pushNotifier)
-	router := api.NewRouter(h, protectedAuthHandler, deviceHandler, relationshipHandler, messageHandler, presenceHandler, realtimeHandler, tm, redisClient)
+	router := api.NewRouter(h, protectedAuthHandler, deviceHandler, relationshipHandler, dailyCheckInHandler, messageHandler, presenceHandler, realtimeHandler, tm, redisClient)
 
 	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: router, ReadHeaderTimeout: 5 * time.Second}
 	go func() {

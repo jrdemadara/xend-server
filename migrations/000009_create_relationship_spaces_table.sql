@@ -4,6 +4,7 @@ CREATE TABLE relationship_spaces (
     name VARCHAR(120),
     created_by_user_id UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     current_level SMALLINT NOT NULL DEFAULT 1,
+    daily_checkin_timezone VARCHAR(64) NOT NULL DEFAULT 'UTC',
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     archived_at TIMESTAMPTZ
