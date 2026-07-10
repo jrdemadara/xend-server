@@ -14,6 +14,7 @@ import (
 	"xend.chat/m/internal/auth"
 	"xend.chat/m/internal/config"
 	"xend.chat/m/internal/dailycheckin"
+	"xend.chat/m/internal/dailyritual"
 	"xend.chat/m/internal/db"
 	"xend.chat/m/internal/logging"
 	"xend.chat/m/internal/notify"
@@ -80,8 +81,10 @@ func main() {
 	relationshipHandler := api.NewRelationshipHandler(repo, emailEnqueuer, hub, pushNotifier)
 	dailyCheckInRepo := dailycheckin.NewRepository(pool)
 	dailyCheckInHandler := api.NewDailyCheckInHandler(dailyCheckInRepo, hub)
+	dailyRitualRepo := dailyritual.NewRepository(pool)
+	dailyRitualHandler := api.NewDailyRitualHandler(dailyRitualRepo)
 	messageHandler := api.NewMessageHandler(repo, hub, pushNotifier)
-	router := api.NewRouter(h, protectedAuthHandler, deviceHandler, relationshipHandler, dailyCheckInHandler, messageHandler, presenceHandler, realtimeHandler, tm, redisClient)
+	router := api.NewRouter(h, protectedAuthHandler, deviceHandler, relationshipHandler, dailyCheckInHandler, dailyRitualHandler, messageHandler, presenceHandler, realtimeHandler, tm, redisClient)
 
 	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: router, ReadHeaderTimeout: 5 * time.Second}
 	go func() {

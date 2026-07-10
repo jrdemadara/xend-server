@@ -11,7 +11,7 @@ import (
 	servicerealtime "xend.chat/m/services/realtime"
 )
 
-func NewRouter(authHandler *auth.Handler, protectedAuthHandler *ProtectedAuthHandler, deviceHandler *DeviceHandler, relationshipHandler *RelationshipHandler, dailyCheckInHandler *DailyCheckInHandler, messageHandler *MessageHandler, presenceHandler *PresenceHandler, realtimeHandler *servicerealtime.Handler, tokens *auth.TokenManager, redisClient *goredis.Client) http.Handler {
+func NewRouter(authHandler *auth.Handler, protectedAuthHandler *ProtectedAuthHandler, deviceHandler *DeviceHandler, relationshipHandler *RelationshipHandler, dailyCheckInHandler *DailyCheckInHandler, dailyRitualHandler *DailyRitualHandler, messageHandler *MessageHandler, presenceHandler *PresenceHandler, realtimeHandler *servicerealtime.Handler, tokens *auth.TokenManager, redisClient *goredis.Client) http.Handler {
 	r := chi.NewRouter()
 	rl := newAuthRateLimiter(redisClient, 30, time.Minute)
 
@@ -36,6 +36,10 @@ func NewRouter(authHandler *auth.Handler, protectedAuthHandler *ProtectedAuthHan
 		v1.Group(func(protected chi.Router) {
 			protected.Use(requireAuthMiddleware(tokens))
 			protected.Get("/ws/connections", realtimeHandler.Connections)
+
+			protected.Route("/daily-rituals", func(dr chi.Router) {
+				dr.Get("/templates", dailyRitualHandler.ListTemplates)
+			})
 
 			protected.Route("/users", func(ur chi.Router) {
 				ur.Get("/me", func(w http.ResponseWriter, r *http.Request) {
@@ -84,6 +88,8 @@ func NewRouter(authHandler *auth.Handler, protectedAuthHandler *ProtectedAuthHan
 				sr.Post("/unlock", relationshipHandler.UnlockSpace)
 				sr.Get("/{space_id}/daily-checkin", dailyCheckInHandler.GetToday)
 				sr.Post("/{space_id}/daily-checkin", dailyCheckInHandler.Submit)
+				sr.Get("/{space_id}/daily-rituals", dailyRitualHandler.GetSpaceSelections)
+				sr.Put("/{space_id}/daily-rituals", dailyRitualHandler.UpdateSpaceSelections)
 				sr.Get("/{space_id}/level-progress", relationshipHandler.ListLevelProgress)
 				sr.Get("/{space_id}/members", relationshipHandler.ListMembers)
 				sr.Put("/{space_id}/default", relationshipHandler.SetDefaultSpace)
