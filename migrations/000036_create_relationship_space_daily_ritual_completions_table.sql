@@ -1,24 +1,22 @@
 -- +goose Up
 CREATE TABLE relationship_space_daily_ritual_completions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    relationship_space_id UUID NOT NULL REFERENCES relationship_spaces(id) ON DELETE CASCADE,
-    template_id UUID NOT NULL REFERENCES daily_ritual_templates(id) ON DELETE RESTRICT,
+    assignment_id UUID NOT NULL REFERENCES relationship_space_daily_ritual_assignments(id) ON DELETE CASCADE,
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    ritual_date DATE NOT NULL,
-    timezone_name VARCHAR(64) NOT NULL,
+    text_response TEXT,
+    image_path TEXT,
     submitted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT relationship_space_daily_ritual_completions_timezone_name_chk CHECK (char_length(timezone_name) > 0),
-    CONSTRAINT relationship_space_daily_ritual_completions_unique_submission UNIQUE (relationship_space_id, template_id, user_id, ritual_date)
+    CONSTRAINT relationship_space_daily_ritual_completions_unique_submission UNIQUE (assignment_id, user_id)
 );
 
-CREATE INDEX idx_relationship_space_daily_ritual_completions_space_date
-    ON relationship_space_daily_ritual_completions(relationship_space_id, ritual_date);
+CREATE INDEX idx_relationship_space_daily_ritual_completions_assignment
+    ON relationship_space_daily_ritual_completions(assignment_id, submitted_at);
 
-CREATE INDEX idx_relationship_space_daily_ritual_completions_user_date
-    ON relationship_space_daily_ritual_completions(user_id, ritual_date);
+CREATE INDEX idx_relationship_space_daily_ritual_completions_user
+    ON relationship_space_daily_ritual_completions(user_id, submitted_at);
 
 -- +goose Down
-DROP INDEX IF EXISTS idx_relationship_space_daily_ritual_completions_user_date;
-DROP INDEX IF EXISTS idx_relationship_space_daily_ritual_completions_space_date;
+DROP INDEX IF EXISTS idx_relationship_space_daily_ritual_completions_user;
+DROP INDEX IF EXISTS idx_relationship_space_daily_ritual_completions_assignment;
 DROP TABLE IF EXISTS relationship_space_daily_ritual_completions;

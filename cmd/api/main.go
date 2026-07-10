@@ -82,7 +82,8 @@ func main() {
 	dailyCheckInRepo := dailycheckin.NewRepository(pool)
 	dailyCheckInHandler := api.NewDailyCheckInHandler(dailyCheckInRepo, hub)
 	dailyRitualRepo := dailyritual.NewRepository(pool)
-	dailyRitualHandler := api.NewDailyRitualHandler(dailyRitualRepo)
+	dailyRitualStore := dailyritual.NewSubmissionStore("storage/daily-rituals")
+	dailyRitualHandler := api.NewDailyRitualHandler(dailyRitualRepo, dailyRitualStore)
 	messageHandler := api.NewMessageHandler(repo, hub, pushNotifier)
 	router := api.NewRouter(h, protectedAuthHandler, deviceHandler, relationshipHandler, dailyCheckInHandler, dailyRitualHandler, messageHandler, presenceHandler, realtimeHandler, tm, redisClient)
 
