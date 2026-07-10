@@ -119,7 +119,7 @@ func (r *Repository) SubmitTodayCheckIn(ctx context.Context, userID, spaceID str
 			}
 
 			pointsToAward := DailyBondPoints
-			milestone, err := r.findMilestoneForCompletedDays(ctx, tx, completedDaysCount)
+			milestone, err := r.findMilestoneForStreakDays(ctx, tx, currentStreak)
 			if err != nil {
 				return TodayStatus{}, nil, err
 			}
@@ -258,7 +258,7 @@ func (r *Repository) insertDailyReward(ctx context.Context, q dbtx, spaceID stri
 	return tag.RowsAffected() > 0, nil
 }
 
-func (r *Repository) findMilestoneForCompletedDays(ctx context.Context, q dbtx, completedDays int) (*milestoneRow, error) {
+func (r *Repository) findMilestoneForStreakDays(ctx context.Context, q dbtx, streakDays int) (*milestoneRow, error) {
 	var item milestoneRow
 	err := q.QueryRow(ctx, `
 		SELECT id, completed_days, bonus_points, title, description
@@ -266,7 +266,7 @@ func (r *Repository) findMilestoneForCompletedDays(ctx context.Context, q dbtx, 
 		WHERE completed_days = $1
 		  AND is_active = TRUE
 		LIMIT 1
-	`, completedDays).Scan(&item.ID, &item.CompletedDays, &item.BonusPoints, &item.Title, &item.Description)
+	`, streakDays).Scan(&item.ID, &item.CompletedDays, &item.BonusPoints, &item.Title, &item.Description)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -472,6 +472,7 @@ func (r *Repository) loadTodayStatus(ctx context.Context, q dbtx, userID, spaceI
 	if stats, err = r.getStatsRow(ctx, q, spaceID); err != nil {
 		return TodayStatus{}, err
 	}
+	effectiveCurrentStreak := resolveCurrentStreak(stats, checkinDate)
 
 	var dailyRewardPoints int
 	err = q.QueryRow(ctx, `
@@ -530,7 +531,7 @@ func (r *Repository) loadTodayStatus(ctx context.Context, q dbtx, userID, spaceI
 		ActiveMemberCount:            activeMemberCount,
 		SubmittedMemberCount:         submittedMemberCount,
 		CompletedDaysCount:           stats.CompletedDaysCount,
-		CurrentStreak:                stats.CurrentStreak,
+		CurrentStreak:                effectiveCurrentStreak,
 		DailyRewardAwarded:           dailyRewardAwarded,
 		DailyRewardPoints:            dailyRewardPoints,
 		MilestoneAward:               milestoneAward,
@@ -546,4 +547,23 @@ func (r *Repository) getStatsRow(ctx context.Context, q dbtx, spaceID string) (s
 		WHERE relationship_space_id = $1
 	`, spaceID).Scan(&row.CompletedDaysCount, &row.CurrentStreak, &row.LastCompletedCheckinDate)
 	return row, err
+}
+
+func resolveCurrentStreak(stats statsRow, checkinDate time.Time) int {
+	if stats.CurrentStreak <= 0 || stats.LastCompletedCheckinDate == nil {
+		return 0
+	}
+
+	lastCompletedDate := stats.LastCompletedCheckinDate.Format(dateLayout)
+	todayDate := checkinDate.Format(dateLayout)
+	yesterdayDate := checkinDate.AddDate(0, 0, -1).Format(dateLayout)
+
+	return whenDateMatches(lastCompletedDate, todayDate, yesterdayDate, stats.CurrentStreak)
+}
+
+func whenDateMatches(lastCompletedDate, todayDate, yesterdayDate string, streak int) int {
+	if lastCompletedDate == todayDate || lastCompletedDate == yesterdayDate {
+		return streak
+	}
+	return 0
 }
