@@ -11,7 +11,7 @@ import (
 	servicerealtime "xend.chat/m/services/realtime"
 )
 
-func NewRouter(authHandler *auth.Handler, protectedAuthHandler *ProtectedAuthHandler, deviceHandler *DeviceHandler, relationshipHandler *RelationshipHandler, dailyCheckInHandler *DailyCheckInHandler, dailyRitualHandler *DailyRitualHandler, messageHandler *MessageHandler, presenceHandler *PresenceHandler, realtimeHandler *servicerealtime.Handler, tokens *auth.TokenManager, redisClient *goredis.Client) http.Handler {
+func NewRouter(authHandler *auth.Handler, protectedAuthHandler *ProtectedAuthHandler, deviceHandler *DeviceHandler, relationshipHandler *RelationshipHandler, dailyCheckInHandler *DailyCheckInHandler, dailyRitualHandler *DailyRitualHandler, challengeHandler *ChallengeHandler, messageHandler *MessageHandler, presenceHandler *PresenceHandler, realtimeHandler *servicerealtime.Handler, tokens *auth.TokenManager, redisClient *goredis.Client) http.Handler {
 	r := chi.NewRouter()
 	rl := newAuthRateLimiter(redisClient, 30, time.Minute)
 
@@ -90,6 +90,12 @@ func NewRouter(authHandler *auth.Handler, protectedAuthHandler *ProtectedAuthHan
 				sr.Post("/{space_id}/daily-checkin", dailyCheckInHandler.Submit)
 				sr.Get("/{space_id}/daily-rituals", dailyRitualHandler.GetOverview)
 				sr.Post("/{space_id}/daily-rituals/{assignment_id}/submit", dailyRitualHandler.Submit)
+				sr.Get("/{space_id}/challenges/templates", challengeHandler.ListTemplates)
+				sr.Get("/{space_id}/challenges", challengeHandler.GetOverview)
+				sr.Post("/{space_id}/challenges", challengeHandler.Create)
+				sr.Post("/{space_id}/challenges/{challenge_id}/accept", challengeHandler.Accept)
+				sr.Post("/{space_id}/challenges/{challenge_id}/decline", challengeHandler.Decline)
+				sr.Post("/{space_id}/challenges/{challenge_id}/complete", challengeHandler.Complete)
 				sr.Get("/{space_id}/level-progress", relationshipHandler.ListLevelProgress)
 				sr.Get("/{space_id}/members", relationshipHandler.ListMembers)
 				sr.Put("/{space_id}/default", relationshipHandler.SetDefaultSpace)

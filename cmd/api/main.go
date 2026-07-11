@@ -12,6 +12,7 @@ import (
 
 	"github.com/hibiken/asynq"
 	"xend.chat/m/internal/auth"
+	"xend.chat/m/internal/challenges"
 	"xend.chat/m/internal/config"
 	"xend.chat/m/internal/dailycheckin"
 	"xend.chat/m/internal/dailyritual"
@@ -84,8 +85,11 @@ func main() {
 	dailyRitualRepo := dailyritual.NewRepository(pool)
 	dailyRitualStore := dailyritual.NewSubmissionStore("storage/daily-rituals")
 	dailyRitualHandler := api.NewDailyRitualHandler(dailyRitualRepo, dailyRitualStore)
+	challengeRepo := challenges.NewRepository(pool)
+	challengeStore := challenges.NewSubmissionStore("storage/challenges")
+	challengeHandler := api.NewChallengeHandler(challengeRepo, challengeStore, hub)
 	messageHandler := api.NewMessageHandler(repo, hub, pushNotifier)
-	router := api.NewRouter(h, protectedAuthHandler, deviceHandler, relationshipHandler, dailyCheckInHandler, dailyRitualHandler, messageHandler, presenceHandler, realtimeHandler, tm, redisClient)
+	router := api.NewRouter(h, protectedAuthHandler, deviceHandler, relationshipHandler, dailyCheckInHandler, dailyRitualHandler, challengeHandler, messageHandler, presenceHandler, realtimeHandler, tm, redisClient)
 
 	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: router, ReadHeaderTimeout: 5 * time.Second}
 	go func() {
