@@ -3,6 +3,7 @@
 
 # Secrets
 secrets/*.json
+storage/
 
 # Go
 bin/
