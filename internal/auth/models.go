@@ -60,15 +60,6 @@ type TokenRefreshResponse struct {
 	ExpiresIn    int64  `json:"expires_in"`
 }
 
-type UserProfileResponse struct {
-	UserID      string  `json:"user_id"`
-	DeviceID    string  `json:"device_id"`
-	DisplayName string  `json:"display_name"`
-	Email       string  `json:"email"`
-	AvatarURL   *string `json:"avatar_url"`
-	Identifier  string  `json:"identifier"`
-}
-
 type Session struct {
 	ID               string
 	UserID           string

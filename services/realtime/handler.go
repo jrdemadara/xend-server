@@ -1,6 +1,7 @@
 package realtime
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -9,26 +10,38 @@ import (
 
 	"github.com/gorilla/websocket"
 	"xend.chat/m/internal/auth"
+	"xend.chat/m/internal/message"
 	"xend.chat/m/internal/presence"
 	internalrealtime "xend.chat/m/internal/realtime"
+	"xend.chat/m/internal/relationship"
 	"xend.chat/m/pkg/httputil"
 	"xend.chat/m/pkg/wsutil"
 )
 
-type Handler struct {
-	tokens   *auth.TokenManager
-	hub      *internalrealtime.Hub
-	presence *presence.Service
-	repo     *auth.Repository
-	upgrader websocket.Upgrader
+type ConversationRecipientLookup interface {
+	ListConversationRecipientUserIDs(ctx context.Context, conversationID, excludeUserID string) ([]string, error)
 }
 
-func NewHandler(tokens *auth.TokenManager, hub *internalrealtime.Hub, presenceSvc *presence.Service, repo *auth.Repository) *Handler {
+type RelatedUserLookup interface {
+	ListRelatedUserIDs(ctx context.Context, userID string) ([]string, error)
+}
+
+type Handler struct {
+	tokens                 *auth.TokenManager
+	hub                    *internalrealtime.Hub
+	presence               *presence.Service
+	conversationRecipients ConversationRecipientLookup
+	relatedUsers           RelatedUserLookup
+	upgrader               websocket.Upgrader
+}
+
+func NewHandler(tokens *auth.TokenManager, hub *internalrealtime.Hub, presenceSvc *presence.Service, messages *message.Repository, relationships *relationship.Repository) *Handler {
 	return &Handler{
-		tokens:   tokens,
-		hub:      hub,
-		presence: presenceSvc,
-		repo:     repo,
+		tokens:                 tokens,
+		hub:                    hub,
+		presence:               presenceSvc,
+		conversationRecipients: messages,
+		relatedUsers:           relationships,
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
@@ -119,7 +132,7 @@ type clientEvent struct {
 }
 
 func (h *Handler) handleClientEvent(r *http.Request, senderUserID string, data []byte) {
-	if h.repo == nil {
+	if h.conversationRecipients == nil {
 		return
 	}
 	var event clientEvent
@@ -133,7 +146,7 @@ func (h *Handler) handleClientEvent(r *http.Request, senderUserID string, data [
 	if conversationID == "" {
 		return
 	}
-	recipientUserIDs, err := h.repo.ListConversationRecipientUserIDs(r.Context(), conversationID, senderUserID)
+	recipientUserIDs, err := h.conversationRecipients.ListConversationRecipientUserIDs(r.Context(), conversationID, senderUserID)
 	if err != nil {
 		return
 	}
@@ -148,10 +161,10 @@ func (h *Handler) handleClientEvent(r *http.Request, senderUserID string, data [
 }
 
 func (h *Handler) broadcastPresence(r *http.Request, userID string, isOnline bool) {
-	if h.repo == nil || h.hub == nil {
+	if h.relatedUsers == nil || h.hub == nil {
 		return
 	}
-	relatedUserIDs, err := h.repo.ListRelatedUserIDs(r.Context(), userID)
+	relatedUserIDs, err := h.relatedUsers.ListRelatedUserIDs(r.Context(), userID)
 	if err != nil {
 		return
 	}

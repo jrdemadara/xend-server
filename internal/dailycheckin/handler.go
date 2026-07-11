@@ -1,43 +1,43 @@
-package api
+package dailycheckin
 
 import (
 	"errors"
 	"net/http"
 	"strings"
 
-	"xend.chat/m/internal/dailycheckin"
+	"xend.chat/m/internal/auth"
 	"xend.chat/m/internal/realtime"
 	"xend.chat/m/pkg/httputil"
 	"xend.chat/m/pkg/wsutil"
 )
 
-type DailyCheckInHandler struct {
-	repo *dailycheckin.Repository
+type Handler struct {
+	repo *Repository
 	hub  *realtime.Hub
 }
 
-func NewDailyCheckInHandler(repo *dailycheckin.Repository, hub *realtime.Hub) *DailyCheckInHandler {
-	return &DailyCheckInHandler{repo: repo, hub: hub}
+func NewHandler(repo *Repository, hub *realtime.Hub) *Handler {
+	return &Handler{repo: repo, hub: hub}
 }
 
-type dailyCheckInStatusResponse struct {
-	RelationshipSpaceID          string                              `json:"relationship_space_id"`
-	Timezone                     string                              `json:"timezone"`
-	CheckInDate                  string                              `json:"checkin_date"`
-	MyCheckedIn                  bool                                `json:"my_checked_in"`
-	PartnerCheckedIn             bool                                `json:"partner_checked_in"`
-	AllMembersCheckedIn          bool                                `json:"all_members_checked_in"`
-	ActiveMemberCount            int                                 `json:"active_member_count"`
-	SubmittedMemberCount         int                                 `json:"submitted_member_count"`
-	CompletedDaysCount           int                                 `json:"completed_days_count"`
-	CurrentStreak                int                                 `json:"current_streak"`
-	DailyRewardAwarded           bool                                `json:"daily_reward_awarded"`
-	DailyRewardPoints            int                                 `json:"daily_reward_points"`
-	MilestoneAward               *dailyCheckInMilestoneAwardResponse `json:"milestone_award,omitempty"`
-	TotalCheckInBondPointsEarned int                                 `json:"total_checkin_bond_points_earned"`
+type statusResponse struct {
+	RelationshipSpaceID          string                  `json:"relationship_space_id"`
+	Timezone                     string                  `json:"timezone"`
+	CheckInDate                  string                  `json:"checkin_date"`
+	MyCheckedIn                  bool                    `json:"my_checked_in"`
+	PartnerCheckedIn             bool                    `json:"partner_checked_in"`
+	AllMembersCheckedIn          bool                    `json:"all_members_checked_in"`
+	ActiveMemberCount            int                     `json:"active_member_count"`
+	SubmittedMemberCount         int                     `json:"submitted_member_count"`
+	CompletedDaysCount           int                     `json:"completed_days_count"`
+	CurrentStreak                int                     `json:"current_streak"`
+	DailyRewardAwarded           bool                    `json:"daily_reward_awarded"`
+	DailyRewardPoints            int                     `json:"daily_reward_points"`
+	MilestoneAward               *milestoneAwardResponse `json:"milestone_award,omitempty"`
+	TotalCheckInBondPointsEarned int                     `json:"total_checkin_bond_points_earned"`
 }
 
-type dailyCheckInMilestoneAwardResponse struct {
+type milestoneAwardResponse struct {
 	MilestoneID   string  `json:"milestone_id"`
 	CompletedDays int     `json:"completed_days"`
 	BonusPoints   int     `json:"bonus_points"`
@@ -45,8 +45,8 @@ type dailyCheckInMilestoneAwardResponse struct {
 	Description   *string `json:"description,omitempty"`
 }
 
-func (h *DailyCheckInHandler) GetToday(w http.ResponseWriter, r *http.Request) {
-	claims, ok := claimsFromContext(r.Context())
+func (h *Handler) GetToday(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.AccessClaimsFromContext(r.Context())
 	if !ok {
 		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
 		return
@@ -63,11 +63,11 @@ func (h *DailyCheckInHandler) GetToday(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, err)
 		return
 	}
-	httputil.JSON(w, http.StatusOK, toDailyCheckInStatusResponse(status))
+	httputil.JSON(w, http.StatusOK, toStatusResponse(status))
 }
 
-func (h *DailyCheckInHandler) Submit(w http.ResponseWriter, r *http.Request) {
-	claims, ok := claimsFromContext(r.Context())
+func (h *Handler) Submit(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.AccessClaimsFromContext(r.Context())
 	if !ok {
 		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
 		return
@@ -111,22 +111,22 @@ func (h *DailyCheckInHandler) Submit(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	httputil.JSON(w, http.StatusOK, toDailyCheckInStatusResponse(status))
+	httputil.JSON(w, http.StatusOK, toStatusResponse(status))
 }
 
-func (h *DailyCheckInHandler) writeError(w http.ResponseWriter, err error) {
+func (h *Handler) writeError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, dailycheckin.ErrRelationshipSpaceNotFound):
+	case errors.Is(err, ErrRelationshipSpaceNotFound):
 		httputil.Error(w, http.StatusNotFound, "not_found", "relationship space not found")
-	case errors.Is(err, dailycheckin.ErrInvalidTimezone):
+	case errors.Is(err, ErrInvalidTimezone):
 		httputil.Error(w, http.StatusUnprocessableEntity, "invalid_timezone", "relationship space timezone is invalid")
 	default:
 		httputil.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 	}
 }
 
-func toDailyCheckInStatusResponse(status dailycheckin.TodayStatus) dailyCheckInStatusResponse {
-	resp := dailyCheckInStatusResponse{
+func toStatusResponse(status TodayStatus) statusResponse {
+	resp := statusResponse{
 		RelationshipSpaceID:          status.RelationshipSpaceID,
 		Timezone:                     status.Timezone,
 		CheckInDate:                  status.CheckInDate,
@@ -142,7 +142,7 @@ func toDailyCheckInStatusResponse(status dailycheckin.TodayStatus) dailyCheckInS
 		TotalCheckInBondPointsEarned: status.TotalCheckInBondPointsEarned,
 	}
 	if status.MilestoneAward != nil {
-		resp.MilestoneAward = &dailyCheckInMilestoneAwardResponse{
+		resp.MilestoneAward = &milestoneAwardResponse{
 			MilestoneID:   status.MilestoneAward.MilestoneID,
 			CompletedDays: status.MilestoneAward.CompletedDays,
 			BonusPoints:   status.MilestoneAward.BonusPoints,

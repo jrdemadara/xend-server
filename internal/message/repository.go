@@ -1,4 +1,4 @@
-package auth
+package message
 
 import (
 	"context"
@@ -7,23 +7,15 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-type MessageRecord struct {
-	MessageID       string
-	ConversationID  string
-	SenderUserID    string
-	SenderDeviceID  string
-	ClientMessageID string
-	MessageType     string
-	Ciphertext      string
-	ReplyToMessageID *string
-	SenderTimestamp *time.Time
-	CreatedAt       time.Time
-	ReceiptUserID   *string
-	ReceiptStatus   *string
-	DeliveredAt     *time.Time
-	ReadAt          *time.Time
+type Repository struct {
+	db *pgxpool.Pool
+}
+
+func NewRepository(db *pgxpool.Pool) *Repository {
+	return &Repository{db: db}
 }
 
 func (r *Repository) CreateConversationMessage(
@@ -36,10 +28,10 @@ func (r *Repository) CreateConversationMessage(
 	ciphertext string,
 	senderTimestamp *time.Time,
 	replyToMessageID *string,
-) (MessageRecord, error) {
+) (Record, error) {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
-		return MessageRecord{}, err
+		return Record{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
@@ -47,18 +39,18 @@ func (r *Repository) CreateConversationMessage(
 	if err == nil {
 		recipients, recipientErr := r.listConversationRecipientDevicesTx(ctx, tx, conversationID, userID)
 		if recipientErr != nil {
-			return MessageRecord{}, recipientErr
+			return Record{}, recipientErr
 		}
 		if receiptErr := r.insertMessageReceiptsTx(ctx, tx, message.MessageID, recipients); receiptErr != nil {
-			return MessageRecord{}, receiptErr
+			return Record{}, receiptErr
 		}
 		if commitErr := tx.Commit(ctx); commitErr != nil {
-			return MessageRecord{}, commitErr
+			return Record{}, commitErr
 		}
 		return message, nil
 	}
 	if !isMessageUniqueViolation(err) {
-		return MessageRecord{}, err
+		return Record{}, err
 	}
 	return r.GetConversationMessageByClientID(ctx, deviceID, clientMessageID)
 }
@@ -79,8 +71,8 @@ func (r *Repository) insertConversationMessageTx(
 	ciphertext string,
 	senderTimestamp *time.Time,
 	replyToMessageID *string,
-) (MessageRecord, error) {
-	var item MessageRecord
+) (Record, error) {
+	var item Record
 	err := tx.QueryRow(ctx, `
 		INSERT INTO messages (
 			conversation_id,
@@ -107,7 +99,7 @@ func (r *Repository) insertConversationMessageTx(
 		&item.CreatedAt,
 	)
 	if err != nil {
-		return MessageRecord{}, err
+		return Record{}, err
 	}
 	return item, nil
 }
@@ -139,22 +131,13 @@ func (r *Repository) listConversationRecipientDevicesTx(ctx context.Context, tx 
 		}
 		items = append(items, item)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
+	return items, rows.Err()
 }
 
 func (r *Repository) insertMessageReceiptsTx(ctx context.Context, tx pgx.Tx, messageID string, recipients []conversationRecipientDevice) error {
 	for _, recipient := range recipients {
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO message_receipts (
-				message_id,
-				recipient_user_id,
-				recipient_device_id,
-				sent_at,
-				status
-			)
+			INSERT INTO message_receipts (message_id, recipient_user_id, recipient_device_id, sent_at, status)
 			VALUES ($1, $2, $3, now(), 'sent')
 			ON CONFLICT (message_id, recipient_device_id) DO NOTHING
 		`, messageID, recipient.UserID, recipient.DeviceID); err != nil {
@@ -164,19 +147,10 @@ func (r *Repository) insertMessageReceiptsTx(ctx context.Context, tx pgx.Tx, mes
 	return nil
 }
 
-func (r *Repository) GetConversationMessageByClientID(ctx context.Context, deviceID, clientMessageID string) (MessageRecord, error) {
-	var item MessageRecord
+func (r *Repository) GetConversationMessageByClientID(ctx context.Context, deviceID, clientMessageID string) (Record, error) {
+	var item Record
 	err := r.db.QueryRow(ctx, `
-		SELECT id,
-		       conversation_id,
-		       sender_user_id,
-		       sender_device_id,
-		       client_message_id,
-		       message_type,
-		       ciphertext,
-		       reply_to_message_id,
-		       sender_timestamp,
-		       created_at
+		SELECT id, conversation_id, sender_user_id, sender_device_id, client_message_id, message_type, ciphertext, reply_to_message_id, sender_timestamp, created_at
 		FROM messages
 		WHERE sender_device_id = $1
 		  AND client_message_id = $2
@@ -194,12 +168,12 @@ func (r *Repository) GetConversationMessageByClientID(ctx context.Context, devic
 		&item.CreatedAt,
 	)
 	if err != nil {
-		return MessageRecord{}, err
+		return Record{}, err
 	}
 	return item, nil
 }
 
-func (r *Repository) ListConversationMessages(ctx context.Context, userID, conversationID string, limit int, before *time.Time) ([]MessageRecord, error) {
+func (r *Repository) ListConversationMessages(ctx context.Context, userID, conversationID string, limit int, before *time.Time) ([]Record, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 100
 	}
@@ -220,15 +194,10 @@ func (r *Repository) ListConversationMessages(ctx context.Context, userID, conve
 		       receipt.delivered_at,
 		       receipt.read_at
 		FROM messages m
-		JOIN conversations c
-		  ON c.id = m.conversation_id
-		JOIN relationship_space_members rsm
-		  ON rsm.relationship_space_id = c.relationship_space_id
+		JOIN conversations c ON c.id = m.conversation_id
+		JOIN relationship_space_members rsm ON rsm.relationship_space_id = c.relationship_space_id
 		LEFT JOIN LATERAL (
-			SELECT mr.recipient_user_id,
-			       mr.status,
-			       mr.delivered_at,
-			       mr.read_at
+			SELECT mr.recipient_user_id, mr.status, mr.delivered_at, mr.read_at
 			FROM message_receipts mr
 			WHERE mr.message_id = m.id
 			  AND (
@@ -251,9 +220,9 @@ func (r *Repository) ListConversationMessages(ctx context.Context, userID, conve
 	}
 	defer rows.Close()
 
-	items := make([]MessageRecord, 0)
+	items := make([]Record, 0)
 	for rows.Next() {
-		var item MessageRecord
+		var item Record
 		if err := rows.Scan(
 			&item.MessageID,
 			&item.ConversationID,
@@ -274,13 +243,10 @@ func (r *Repository) ListConversationMessages(ctx context.Context, userID, conve
 		}
 		items = append(items, item)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
+	return items, rows.Err()
 }
 
-func (r *Repository) ListMessagesForUserSince(ctx context.Context, userID string, since *time.Time, limit int) ([]MessageRecord, error) {
+func (r *Repository) ListMessagesForUserSince(ctx context.Context, userID string, since *time.Time, limit int) ([]Record, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 200
 	}
@@ -301,15 +267,10 @@ func (r *Repository) ListMessagesForUserSince(ctx context.Context, userID string
 		       receipt.delivered_at,
 		       receipt.read_at
 		FROM messages m
-		JOIN conversations c
-		  ON c.id = m.conversation_id
-		JOIN relationship_space_members rsm
-		  ON rsm.relationship_space_id = c.relationship_space_id
+		JOIN conversations c ON c.id = m.conversation_id
+		JOIN relationship_space_members rsm ON rsm.relationship_space_id = c.relationship_space_id
 		LEFT JOIN LATERAL (
-			SELECT mr.recipient_user_id,
-			       mr.status,
-			       mr.delivered_at,
-			       mr.read_at
+			SELECT mr.recipient_user_id, mr.status, mr.delivered_at, mr.read_at
 			FROM message_receipts mr
 			WHERE mr.message_id = m.id
 			  AND (
@@ -331,9 +292,9 @@ func (r *Repository) ListMessagesForUserSince(ctx context.Context, userID string
 	}
 	defer rows.Close()
 
-	items := make([]MessageRecord, 0)
+	items := make([]Record, 0)
 	for rows.Next() {
-		var item MessageRecord
+		var item Record
 		if err := rows.Scan(
 			&item.MessageID,
 			&item.ConversationID,
@@ -354,18 +315,14 @@ func (r *Repository) ListMessagesForUserSince(ctx context.Context, userID string
 		}
 		items = append(items, item)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
+	return items, rows.Err()
 }
 
 func (r *Repository) ListConversationRecipientUserIDs(ctx context.Context, conversationID, excludeUserID string) ([]string, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT DISTINCT rsm.user_id
 		FROM conversations c
-		JOIN relationship_space_members rsm
-		  ON rsm.relationship_space_id = c.relationship_space_id
+		JOIN relationship_space_members rsm ON rsm.relationship_space_id = c.relationship_space_id
 		WHERE c.id = $1
 		  AND rsm.membership_status = 'active'
 		  AND rsm.user_id <> $2
@@ -383,36 +340,6 @@ func (r *Repository) ListConversationRecipientUserIDs(ctx context.Context, conve
 		}
 		items = append(items, userID)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-func (r *Repository) ListRelatedUserIDs(ctx context.Context, userID string) ([]string, error) {
-	rows, err := r.db.Query(ctx, `
-		SELECT DISTINCT other.user_id
-		FROM relationship_space_members me
-		JOIN relationship_space_members other
-		  ON other.relationship_space_id = me.relationship_space_id
-		WHERE me.user_id = $1
-		  AND me.membership_status = 'active'
-		  AND other.membership_status = 'active'
-		  AND other.user_id <> $1
-	`, userID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	items := make([]string, 0, 4)
-	for rows.Next() {
-		var relatedUserID string
-		if err := rows.Scan(&relatedUserID); err != nil {
-			return nil, err
-		}
-		items = append(items, relatedUserID)
-	}
 	return items, rows.Err()
 }
 
@@ -423,10 +350,8 @@ func (r *Repository) MarkMessagesDeliveredForDevice(ctx context.Context, userID,
 			SET status = 'delivered',
 			    delivered_at = COALESCE(mr.delivered_at, now())
 			FROM messages m
-			JOIN conversations c
-			  ON c.id = m.conversation_id
-			JOIN relationship_space_members rsm
-			  ON rsm.relationship_space_id = c.relationship_space_id
+			JOIN conversations c ON c.id = m.conversation_id
+			JOIN relationship_space_members rsm ON rsm.relationship_space_id = c.relationship_space_id
 			WHERE mr.message_id = m.id
 			  AND mr.recipient_user_id = $1
 			  AND mr.recipient_device_id = $2
@@ -461,10 +386,8 @@ func (r *Repository) MarkConversationMessagesRead(ctx context.Context, userID, d
 			    delivered_at = COALESCE(mr.delivered_at, now()),
 			    read_at = COALESCE(mr.read_at, now())
 			FROM messages m
-			JOIN conversations c
-			  ON c.id = m.conversation_id
-			JOIN relationship_space_members rsm
-			  ON rsm.relationship_space_id = c.relationship_space_id
+			JOIN conversations c ON c.id = m.conversation_id
+			JOIN relationship_space_members rsm ON rsm.relationship_space_id = c.relationship_space_id
 			WHERE mr.message_id = m.id
 			  AND m.conversation_id = $3
 			  AND mr.recipient_user_id = $1

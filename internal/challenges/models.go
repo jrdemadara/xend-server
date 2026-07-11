@@ -10,6 +10,7 @@ var (
 	ErrTemplateNotFound          = errors.New("challenge template not found")
 	ErrPartnerNotFound           = errors.New("challenge partner not found")
 	ErrChallengeNotFound         = errors.New("challenge not found")
+	ErrChallengeImageNotFound    = errors.New("challenge image not found")
 	ErrChallengeUnavailable      = errors.New("challenge is not available")
 	ErrChallengeNotAllowed       = errors.New("challenge action is not allowed")
 	ErrTextResponseRequired      = errors.New("challenge text response is required")
@@ -77,6 +78,8 @@ type Challenge struct {
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
 	SubmittedByMe       bool
+	SubmissionText      *string
+	SubmissionImagePath *string
 	CanAccept           bool
 	CanDecline          bool
 	CanComplete         bool

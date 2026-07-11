@@ -1,4 +1,4 @@
-package api
+package message
 
 import (
 	"errors"
@@ -11,49 +11,51 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"xend.chat/m/internal/auth"
+	"xend.chat/m/internal/device"
 	"xend.chat/m/internal/notify"
 	"xend.chat/m/internal/realtime"
+	"xend.chat/m/internal/user"
 	"xend.chat/m/pkg/httputil"
 	"xend.chat/m/pkg/wsutil"
 )
 
-type MessageHandler struct {
-	repo         *auth.Repository
+type Handler struct {
+	repo         *Repository
+	users        *user.Repository
+	devices      *device.Repository
 	hub          *realtime.Hub
 	pushNotifier notify.PushNotifier
 }
 
-func NewMessageHandler(repo *auth.Repository, hub *realtime.Hub, pushNotifier notify.PushNotifier) *MessageHandler {
-	return &MessageHandler{repo: repo, hub: hub, pushNotifier: pushNotifier}
+func NewHandler(repo *Repository, users *user.Repository, devices *device.Repository, hub *realtime.Hub, pushNotifier notify.PushNotifier) *Handler {
+	return &Handler{
+		repo:         repo,
+		users:        users,
+		devices:      devices,
+		hub:          hub,
+		pushNotifier: pushNotifier,
+	}
 }
 
-type sendMessageRequest struct {
-	ClientMessageID string `json:"client_message_id"`
-	MessageType     string `json:"message_type"`
-	Ciphertext      string `json:"ciphertext"`
-	ReplyToMessageID *string `json:"reply_to_message_id"`
-	SenderTimestamp *int64 `json:"sender_timestamp"`
-}
-
-type messageResponse struct {
-	MessageID       string `json:"message_id"`
-	ConversationID  string `json:"conversation_id"`
-	SenderUserID    string `json:"sender_user_id"`
-	SenderDeviceID  string `json:"sender_device_id"`
-	ClientMessageID string `json:"client_message_id"`
-	MessageType     string `json:"message_type"`
-	Ciphertext      string `json:"ciphertext"`
+type response struct {
+	MessageID        string  `json:"message_id"`
+	ConversationID   string  `json:"conversation_id"`
+	SenderUserID     string  `json:"sender_user_id"`
+	SenderDeviceID   string  `json:"sender_device_id"`
+	ClientMessageID  string  `json:"client_message_id"`
+	MessageType      string  `json:"message_type"`
+	Ciphertext       string  `json:"ciphertext"`
 	ReplyToMessageID *string `json:"reply_to_message_id,omitempty"`
-	SenderTimestamp *int64 `json:"sender_timestamp,omitempty"`
-	CreatedAt       int64  `json:"created_at"`
-	ReceiptUserID   string `json:"receipt_user_id,omitempty"`
-	ReceiptStatus   string `json:"receipt_status,omitempty"`
-	DeliveredAt     *int64 `json:"delivered_at,omitempty"`
-	ReadAt          *int64 `json:"read_at,omitempty"`
+	SenderTimestamp  *int64  `json:"sender_timestamp,omitempty"`
+	CreatedAt        int64   `json:"created_at"`
+	ReceiptUserID    string  `json:"receipt_user_id,omitempty"`
+	ReceiptStatus    string  `json:"receipt_status,omitempty"`
+	DeliveredAt      *int64  `json:"delivered_at,omitempty"`
+	ReadAt           *int64  `json:"read_at,omitempty"`
 }
 
-func (h *MessageHandler) Send(w http.ResponseWriter, r *http.Request) {
-	claims, ok := claimsFromContext(r.Context())
+func (h *Handler) Send(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.AccessClaimsFromContext(r.Context())
 	if !ok {
 		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
 		return
@@ -65,7 +67,7 @@ func (h *MessageHandler) Send(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req sendMessageRequest
+	var req SendRequest
 	if err := httputil.DecodeJSON(r, &req); err != nil {
 		httputil.Error(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
 		return
@@ -88,8 +90,8 @@ func (h *MessageHandler) Send(w http.ResponseWriter, r *http.Request) {
 
 	var senderTimestamp *time.Time
 	if req.SenderTimestamp != nil && *req.SenderTimestamp > 0 {
-		t := time.Unix(*req.SenderTimestamp, 0).UTC()
-		senderTimestamp = &t
+		timestamp := time.Unix(*req.SenderTimestamp, 0).UTC()
+		senderTimestamp = &timestamp
 	}
 
 	item, err := h.repo.CreateConversationMessage(
@@ -113,11 +115,11 @@ func (h *MessageHandler) Send(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.broadcastMessageCreated(r, item)
-	httputil.JSON(w, http.StatusCreated, toMessageResponse(item))
+	httputil.JSON(w, http.StatusCreated, toResponse(item))
 }
 
-func (h *MessageHandler) ListByConversation(w http.ResponseWriter, r *http.Request) {
-	claims, ok := claimsFromContext(r.Context())
+func (h *Handler) ListByConversation(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.AccessClaimsFromContext(r.Context())
 	if !ok {
 		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
 		return
@@ -138,15 +140,15 @@ func (h *MessageHandler) ListByConversation(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	resp := make([]messageResponse, 0, len(items))
+	responseItems := make([]response, 0, len(items))
 	for _, item := range items {
-		resp = append(resp, toMessageResponse(item))
+		responseItems = append(responseItems, toResponse(item))
 	}
-	httputil.JSON(w, http.StatusOK, map[string]any{"items": resp})
+	httputil.JSON(w, http.StatusOK, map[string]any{"items": responseItems})
 }
 
-func (h *MessageHandler) Sync(w http.ResponseWriter, r *http.Request) {
-	claims, ok := claimsFromContext(r.Context())
+func (h *Handler) Sync(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.AccessClaimsFromContext(r.Context())
 	if !ok {
 		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
 		return
@@ -168,15 +170,15 @@ func (h *MessageHandler) Sync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := make([]messageResponse, 0, len(items))
+	responseItems := make([]response, 0, len(items))
 	for _, item := range items {
-		resp = append(resp, toMessageResponse(item))
+		responseItems = append(responseItems, toResponse(item))
 	}
-	httputil.JSON(w, http.StatusOK, map[string]any{"items": resp})
+	httputil.JSON(w, http.StatusOK, map[string]any{"items": responseItems})
 }
 
-func (h *MessageHandler) MarkConversationRead(w http.ResponseWriter, r *http.Request) {
-	claims, ok := claimsFromContext(r.Context())
+func (h *Handler) MarkConversationRead(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.AccessClaimsFromContext(r.Context())
 	if !ok {
 		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
 		return
@@ -197,7 +199,7 @@ func (h *MessageHandler) MarkConversationRead(w http.ResponseWriter, r *http.Req
 	httputil.JSON(w, http.StatusOK, map[string]any{"updated": len(updatedSenderIDs) > 0})
 }
 
-func (h *MessageHandler) broadcastMessageCreated(r *http.Request, item auth.MessageRecord) {
+func (h *Handler) broadcastMessageCreated(r *http.Request, item Record) {
 	if h.hub == nil && h.pushNotifier == nil {
 		return
 	}
@@ -217,21 +219,23 @@ func (h *MessageHandler) broadcastMessageCreated(r *http.Request, item auth.Mess
 	}
 
 	var senderName string
-	if profile, err := h.repo.GetUserProfileByID(r.Context(), item.SenderUserID); err == nil {
-		senderName = profile.DisplayName
+	if h.users != nil {
+		if profile, profileErr := h.users.GetProfileByID(r.Context(), item.SenderUserID); profileErr == nil {
+			senderName = profile.DisplayName
+		}
 	}
 
 	for _, userID := range targetUserIDs {
 		if h.hub != nil {
 			h.hub.SendToUser(userID, wsutil.NewEvent("message_created", eventPayload))
 		}
-		if h.pushNotifier == nil || h.hub != nil && h.hub.HasActiveUser(userID) {
+		if h.pushNotifier == nil || h.devices == nil || h.hub != nil && h.hub.HasActiveUser(userID) {
 			continue
 		}
 
-		tokens, err := h.repo.ListActivePushTokensByUser(r.Context(), userID)
-		if err != nil {
-			slog.Error("push token lookup failed", "event", "message_created", "message_id", item.MessageID, "target_user_id", userID, "error", err)
+		tokens, tokenErr := h.devices.ListActivePushTokensByUser(r.Context(), userID)
+		if tokenErr != nil {
+			slog.Error("push token lookup failed", "event", "message_created", "message_id", item.MessageID, "target_user_id", userID, "error", tokenErr)
 			continue
 		}
 		if len(tokens) == 0 {
@@ -260,7 +264,18 @@ func (h *MessageHandler) broadcastMessageCreated(r *http.Request, item auth.Mess
 	}
 }
 
-func toMessageResponse(item auth.MessageRecord) messageResponse {
+func (h *Handler) broadcastReceiptUpdated(targetUserIDs []string) {
+	if h.hub == nil || len(targetUserIDs) == 0 {
+		return
+	}
+	for _, userID := range targetUserIDs {
+		h.hub.SendToUser(userID, wsutil.NewEvent("message_receipt_updated", map[string]string{
+			"type": "message_receipt_updated",
+		}))
+	}
+}
+
+func toResponse(item Record) response {
 	var senderTimestamp *int64
 	var deliveredAt *int64
 	var readAt *int64
@@ -284,32 +299,22 @@ func toMessageResponse(item auth.MessageRecord) messageResponse {
 	if item.ReceiptStatus != nil {
 		receiptStatus = *item.ReceiptStatus
 	}
-	return messageResponse{
-		MessageID:       item.MessageID,
-		ConversationID:  item.ConversationID,
-		SenderUserID:    item.SenderUserID,
-		SenderDeviceID:  item.SenderDeviceID,
-		ClientMessageID: item.ClientMessageID,
-		MessageType:     item.MessageType,
-		Ciphertext:      item.Ciphertext,
-		ReplyToMessageID: item.ReplyToMessageID,
-		SenderTimestamp: senderTimestamp,
-		CreatedAt:       item.CreatedAt.Unix(),
-		ReceiptUserID:   receiptUserID,
-		ReceiptStatus:   receiptStatus,
-		DeliveredAt:     deliveredAt,
-		ReadAt:          readAt,
-	}
-}
 
-func (h *MessageHandler) broadcastReceiptUpdated(targetUserIDs []string) {
-	if h.hub == nil || len(targetUserIDs) == 0 {
-		return
-	}
-	for _, userID := range targetUserIDs {
-		h.hub.SendToUser(userID, wsutil.NewEvent("message_receipt_updated", map[string]string{
-			"type": "message_receipt_updated",
-		}))
+	return response{
+		MessageID:        item.MessageID,
+		ConversationID:   item.ConversationID,
+		SenderUserID:     item.SenderUserID,
+		SenderDeviceID:   item.SenderDeviceID,
+		ClientMessageID:  item.ClientMessageID,
+		MessageType:      item.MessageType,
+		Ciphertext:       item.Ciphertext,
+		ReplyToMessageID: item.ReplyToMessageID,
+		SenderTimestamp:  senderTimestamp,
+		CreatedAt:        item.CreatedAt.Unix(),
+		ReceiptUserID:    receiptUserID,
+		ReceiptStatus:    receiptStatus,
+		DeliveredAt:      deliveredAt,
+		ReadAt:           readAt,
 	}
 }
 
@@ -325,13 +330,10 @@ func parseLimit(raw string, fallback int, max int) int {
 }
 
 func parseUnixTimePtr(raw string) *time.Time {
-	if strings.TrimSpace(raw) == "" {
-		return nil
-	}
 	value, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
 	if err != nil || value <= 0 {
 		return nil
 	}
-	t := time.Unix(value, 0).UTC()
-	return &t
+	parsed := time.Unix(value, 0).UTC()
+	return &parsed
 }

@@ -1,4 +1,4 @@
-package api
+package presence
 
 import (
 	"log/slog"
@@ -7,39 +7,37 @@ import (
 	"time"
 
 	"xend.chat/m/internal/auth"
-	"xend.chat/m/internal/presence"
 	"xend.chat/m/pkg/httputil"
 )
 
-type PresenceHandler struct {
-	presence *presence.Service
-	repo     *auth.Repository
+type Handler struct {
+	service *Service
 }
 
-func NewPresenceHandler(presenceSvc *presence.Service, repo *auth.Repository) *PresenceHandler {
-	return &PresenceHandler{presence: presenceSvc, repo: repo}
+func NewHandler(service *Service) *Handler {
+	return &Handler{service: service}
 }
 
-func (h *PresenceHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
-	claims, ok := claimsFromContext(r.Context())
+func (h *Handler) Heartbeat(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.AccessClaimsFromContext(r.Context())
 	if !ok {
 		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
 		return
 	}
-	if err := h.presence.Heartbeat(r.Context(), claims.UserID, claims.DeviceID); err != nil {
+	if err := h.service.Heartbeat(r.Context(), claims.UserID, claims.DeviceID); err != nil {
 		httputil.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		return
 	}
 	httputil.JSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-func (h *PresenceHandler) Offline(w http.ResponseWriter, r *http.Request) {
-	claims, ok := claimsFromContext(r.Context())
+func (h *Handler) Offline(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.AccessClaimsFromContext(r.Context())
 	if !ok {
 		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
 		return
 	}
-	if err := h.presence.MarkOffline(r.Context(), claims.UserID, claims.DeviceID); err != nil {
+	if err := h.service.MarkOffline(r.Context(), claims.UserID, claims.DeviceID); err != nil {
 		httputil.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		return
 	}
@@ -47,8 +45,8 @@ func (h *PresenceHandler) Offline(w http.ResponseWriter, r *http.Request) {
 	httputil.JSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-func (h *PresenceHandler) GetUserPresence(w http.ResponseWriter, r *http.Request) {
-	_, ok := claimsFromContext(r.Context())
+func (h *Handler) GetUserPresence(w http.ResponseWriter, r *http.Request) {
+	_, ok := auth.AccessClaimsFromContext(r.Context())
 	if !ok {
 		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
 		return
@@ -60,12 +58,12 @@ func (h *PresenceHandler) GetUserPresence(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	isOnline, err := h.presence.IsUserOnline(r.Context(), userID)
+	isOnline, err := h.service.IsUserOnline(r.Context(), userID)
 	if err != nil {
 		httputil.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		return
 	}
-	lastSeen, err := h.presence.LastSeen(r.Context(), userID)
+	lastSeen, err := h.service.LastSeen(r.Context(), userID)
 	if err != nil {
 		httputil.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		return

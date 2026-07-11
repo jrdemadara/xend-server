@@ -1,25 +1,27 @@
-package api
+package challenges
 
 import (
 	"errors"
+	"mime/multipart"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
-	"xend.chat/m/internal/challenges"
+	"xend.chat/m/internal/auth"
 	"xend.chat/m/internal/realtime"
 	"xend.chat/m/pkg/httputil"
 	"xend.chat/m/pkg/wsutil"
 )
 
-type ChallengeHandler struct {
-	repo            *challenges.Repository
-	submissionStore *challenges.SubmissionStore
+type Handler struct {
+	repo            *Repository
+	submissionStore *SubmissionStore
 	hub             *realtime.Hub
 }
 
-func NewChallengeHandler(repo *challenges.Repository, submissionStore *challenges.SubmissionStore, hub *realtime.Hub) *ChallengeHandler {
-	return &ChallengeHandler{
+func NewHandler(repo *Repository, submissionStore *SubmissionStore, hub *realtime.Hub) *Handler {
+	return &Handler{
 		repo:            repo,
 		submissionStore: submissionStore,
 		hub:             hub,
@@ -80,13 +82,15 @@ type challengeItemResponse struct {
 	CreatedAt           int64   `json:"created_at"`
 	UpdatedAt           int64   `json:"updated_at"`
 	SubmittedByMe       bool    `json:"submitted_by_me"`
+	SubmissionText      *string `json:"submission_text_response,omitempty"`
+	HasSubmissionImage  bool    `json:"has_submission_image"`
 	CanAccept           bool    `json:"can_accept"`
 	CanDecline          bool    `json:"can_decline"`
 	CanComplete         bool    `json:"can_complete"`
 }
 
-func (h *ChallengeHandler) ListTemplates(w http.ResponseWriter, r *http.Request) {
-	claims, ok := claimsFromContext(r.Context())
+func (h *Handler) ListTemplates(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.AccessClaimsFromContext(r.Context())
 	if !ok {
 		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
 		return
@@ -123,8 +127,8 @@ func (h *ChallengeHandler) ListTemplates(w http.ResponseWriter, r *http.Request)
 	httputil.JSON(w, http.StatusOK, map[string]any{"items": resp})
 }
 
-func (h *ChallengeHandler) GetOverview(w http.ResponseWriter, r *http.Request) {
-	claims, ok := claimsFromContext(r.Context())
+func (h *Handler) GetOverview(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.AccessClaimsFromContext(r.Context())
 	if !ok {
 		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
 		return
@@ -143,8 +147,8 @@ func (h *ChallengeHandler) GetOverview(w http.ResponseWriter, r *http.Request) {
 	httputil.JSON(w, http.StatusOK, toChallengeOverviewResponse(overview))
 }
 
-func (h *ChallengeHandler) Create(w http.ResponseWriter, r *http.Request) {
-	claims, ok := claimsFromContext(r.Context())
+func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.AccessClaimsFromContext(r.Context())
 	if !ok {
 		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
 		return
@@ -177,20 +181,20 @@ func (h *ChallengeHandler) Create(w http.ResponseWriter, r *http.Request) {
 	httputil.JSON(w, http.StatusCreated, toChallengeOverviewResponse(overview))
 }
 
-func (h *ChallengeHandler) Accept(w http.ResponseWriter, r *http.Request) {
-	h.handleTransition(w, r, func(userID, spaceID, challengeID string) (challenges.Overview, string, error) {
+func (h *Handler) Accept(w http.ResponseWriter, r *http.Request) {
+	h.handleTransition(w, r, func(userID, spaceID, challengeID string) (Overview, string, error) {
 		return h.repo.AcceptChallenge(r.Context(), userID, spaceID, challengeID)
 	}, "challenge_accepted")
 }
 
-func (h *ChallengeHandler) Decline(w http.ResponseWriter, r *http.Request) {
-	h.handleTransition(w, r, func(userID, spaceID, challengeID string) (challenges.Overview, string, error) {
+func (h *Handler) Decline(w http.ResponseWriter, r *http.Request) {
+	h.handleTransition(w, r, func(userID, spaceID, challengeID string) (Overview, string, error) {
 		return h.repo.DeclineChallenge(r.Context(), userID, spaceID, challengeID)
 	}, "challenge_declined")
 }
 
-func (h *ChallengeHandler) Complete(w http.ResponseWriter, r *http.Request) {
-	claims, ok := claimsFromContext(r.Context())
+func (h *Handler) Complete(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.AccessClaimsFromContext(r.Context())
 	if !ok {
 		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
 		return
@@ -228,13 +232,60 @@ func (h *ChallengeHandler) Complete(w http.ResponseWriter, r *http.Request) {
 	httputil.JSON(w, http.StatusOK, toChallengeOverviewResponse(overview))
 }
 
-func (h *ChallengeHandler) handleTransition(
+func (h *Handler) GetSubmissionImage(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.AccessClaimsFromContext(r.Context())
+	if !ok {
+		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
+		return
+	}
+	spaceID := strings.TrimSpace(r.PathValue("space_id"))
+	if spaceID == "" {
+		httputil.Error(w, http.StatusBadRequest, "invalid_request", "space_id is required")
+		return
+	}
+	challengeID := strings.TrimSpace(r.PathValue("challenge_id"))
+	if challengeID == "" {
+		httputil.Error(w, http.StatusBadRequest, "invalid_request", "challenge_id is required")
+		return
+	}
+
+	media, err := h.repo.GetSubmissionMedia(r.Context(), claims.UserID, spaceID, challengeID)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	if media.ImagePath == nil || strings.TrimSpace(*media.ImagePath) == "" {
+		h.writeError(w, ErrChallengeImageNotFound)
+		return
+	}
+	if h.submissionStore == nil {
+		httputil.Error(w, http.StatusServiceUnavailable, "image_unavailable", "challenge images are unavailable")
+		return
+	}
+
+	data, contentType, err := h.submissionStore.ReadImage(*media.ImagePath)
+	if err != nil {
+		if errors.Is(err, http.ErrMissingFile) || errors.Is(err, ErrImageRequired) || errors.Is(err, os.ErrNotExist) {
+			h.writeError(w, ErrChallengeImageNotFound)
+			return
+		}
+		httputil.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
+		return
+	}
+
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+func (h *Handler) handleTransition(
 	w http.ResponseWriter,
 	r *http.Request,
-	action func(userID, spaceID, challengeID string) (challenges.Overview, string, error),
+	action func(userID, spaceID, challengeID string) (Overview, string, error),
 	eventType string,
 ) {
-	claims, ok := claimsFromContext(r.Context())
+	claims, ok := auth.AccessClaimsFromContext(r.Context())
 	if !ok {
 		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
 		return
@@ -262,7 +313,7 @@ func (h *ChallengeHandler) handleTransition(
 	httputil.JSON(w, http.StatusOK, toChallengeOverviewResponse(overview))
 }
 
-func (h *ChallengeHandler) parseCompletionRequest(r *http.Request) (challenges.Submission, string, error) {
+func (h *Handler) parseCompletionRequest(r *http.Request) (Submission, string, error) {
 	contentType := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type")))
 	if strings.HasPrefix(contentType, "multipart/form-data") {
 		return h.parseMultipartCompletionRequest(r)
@@ -270,43 +321,77 @@ func (h *ChallengeHandler) parseCompletionRequest(r *http.Request) (challenges.S
 
 	var req completeChallengeRequest
 	if err := httputil.DecodeJSON(r, &req); err != nil {
-		return challenges.Submission{}, "", errors.New("invalid JSON body")
+		return Submission{}, "", errors.New("invalid JSON body")
 	}
-	return challenges.Submission{TextResponse: req.TextResponse}, "", nil
+	return Submission{TextResponse: req.TextResponse}, "", nil
 }
 
-func (h *ChallengeHandler) parseMultipartCompletionRequest(r *http.Request) (challenges.Submission, string, error) {
+func (h *Handler) parseMultipartCompletionRequest(r *http.Request) (Submission, string, error) {
 	if err := r.ParseMultipartForm(9 << 20); err != nil {
-		return challenges.Submission{}, "", errors.New("invalid multipart body")
+		return Submission{}, "", errors.New("invalid multipart body")
 	}
 
 	var storedPath string
 	var imagePath *string
-	file, _, err := r.FormFile("image")
+	file, err := openUploadedImageFile(r, "image")
 	if err != nil && !errors.Is(err, http.ErrMissingFile) {
-		return challenges.Submission{}, "", errors.New("invalid image upload")
+		return Submission{}, "", errors.New("invalid image upload")
 	}
 	if err == nil {
 		defer file.Close()
 		if h.submissionStore == nil {
-			return challenges.Submission{}, "", errors.New("image uploads are unavailable")
+			return Submission{}, "", errors.New("image uploads are unavailable")
 		}
 		path, saveErr := h.submissionStore.SaveImage(file)
 		if saveErr != nil {
-			return challenges.Submission{}, "", saveErr
+			return Submission{}, "", saveErr
 		}
 		storedPath = path
 		imagePath = &storedPath
 	}
 
-	textResponse := normalizeChallengeOptionalText(r.FormValue("text_response"))
-	return challenges.Submission{
+	textResponse := normalizeFormText(r.FormValue("text_response"))
+	return Submission{
 		TextResponse: textResponse,
 		ImagePath:    imagePath,
 	}, storedPath, nil
 }
 
-func normalizeChallengeOptionalText(value string) *string {
+func openUploadedImageFile(r *http.Request, fieldName string) (multipart.File, error) {
+	file, _, err := r.FormFile(fieldName)
+	if err == nil || !errors.Is(err, http.ErrMissingFile) {
+		return file, err
+	}
+
+	form := r.MultipartForm
+	if form == nil {
+		return nil, http.ErrMissingFile
+	}
+
+	for _, fallbackKey := range []string{"file", "photo", "attachment"} {
+		headers := form.File[fallbackKey]
+		if len(headers) == 0 {
+			continue
+		}
+		return headers[0].Open()
+	}
+
+	var onlyHeader *multipart.FileHeader
+	for _, headers := range form.File {
+		for _, header := range headers {
+			if onlyHeader != nil {
+				return nil, http.ErrMissingFile
+			}
+			onlyHeader = header
+		}
+	}
+	if onlyHeader == nil {
+		return nil, http.ErrMissingFile
+	}
+	return onlyHeader.Open()
+}
+
+func normalizeFormText(value string) *string {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
 		return nil
@@ -314,39 +399,41 @@ func normalizeChallengeOptionalText(value string) *string {
 	return &trimmed
 }
 
-func (h *ChallengeHandler) sendEvent(userID, eventType string, payload map[string]any) {
+func (h *Handler) sendEvent(userID, eventType string, payload map[string]any) {
 	if h.hub == nil || strings.TrimSpace(userID) == "" {
 		return
 	}
 	h.hub.SendToUser(userID, wsutil.NewEvent(eventType, payload))
 }
 
-func (h *ChallengeHandler) writeError(w http.ResponseWriter, err error) {
+func (h *Handler) writeError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, challenges.ErrRelationshipSpaceNotFound):
+	case errors.Is(err, ErrRelationshipSpaceNotFound):
 		httputil.Error(w, http.StatusNotFound, "not_found", "relationship space not found")
-	case errors.Is(err, challenges.ErrTemplateNotFound):
+	case errors.Is(err, ErrTemplateNotFound):
 		httputil.Error(w, http.StatusNotFound, "not_found", "challenge template not found")
-	case errors.Is(err, challenges.ErrPartnerNotFound):
+	case errors.Is(err, ErrPartnerNotFound):
 		httputil.Error(w, http.StatusConflict, "partner_not_found", "challenge partner is not available")
-	case errors.Is(err, challenges.ErrChallengeNotFound):
+	case errors.Is(err, ErrChallengeNotFound):
 		httputil.Error(w, http.StatusNotFound, "not_found", "challenge not found")
-	case errors.Is(err, challenges.ErrChallengeUnavailable):
+	case errors.Is(err, ErrChallengeImageNotFound):
+		httputil.Error(w, http.StatusNotFound, "not_found", "challenge image not found")
+	case errors.Is(err, ErrChallengeUnavailable):
 		httputil.Error(w, http.StatusConflict, "challenge_unavailable", "challenge is no longer available")
-	case errors.Is(err, challenges.ErrChallengeNotAllowed):
+	case errors.Is(err, ErrChallengeNotAllowed):
 		httputil.Error(w, http.StatusForbidden, "challenge_not_allowed", "challenge action is not allowed")
-	case errors.Is(err, challenges.ErrTextResponseRequired):
+	case errors.Is(err, ErrTextResponseRequired):
 		httputil.Error(w, http.StatusBadRequest, "text_response_required", "text response is required")
-	case errors.Is(err, challenges.ErrImageRequired):
+	case errors.Is(err, ErrImageRequired):
 		httputil.Error(w, http.StatusBadRequest, "image_required", "image is required")
-	case errors.Is(err, challenges.ErrUnsupportedSubmissionType):
+	case errors.Is(err, ErrUnsupportedSubmissionType):
 		httputil.Error(w, http.StatusUnprocessableEntity, "unsupported_submission_type", "challenge submission type is not supported")
 	default:
 		httputil.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 	}
 }
 
-func toChallengeOverviewResponse(overview challenges.Overview) challengeOverviewResponse {
+func toChallengeOverviewResponse(overview Overview) challengeOverviewResponse {
 	return challengeOverviewResponse{
 		RelationshipSpaceID: overview.RelationshipSpaceID,
 		Incoming:            toChallengeItemResponses(overview.Incoming),
@@ -355,7 +442,7 @@ func toChallengeOverviewResponse(overview challenges.Overview) challengeOverview
 	}
 }
 
-func toChallengeItemResponses(items []challenges.Challenge) []challengeItemResponse {
+func toChallengeItemResponses(items []Challenge) []challengeItemResponse {
 	resp := make([]challengeItemResponse, 0, len(items))
 	for _, item := range items {
 		resp = append(resp, challengeItemResponse{
@@ -375,12 +462,14 @@ func toChallengeItemResponses(items []challenges.Challenge) []challengeItemRespo
 			RewardPoints:        item.RewardPoints,
 			Note:                item.Note,
 			Status:              string(item.Status),
-			ExpiresAt:           unixOrNil(item.ExpiresAt),
-			AcceptedAt:          unixOrNil(item.AcceptedAt),
-			CompletedAt:         unixOrNil(item.CompletedAt),
+			ExpiresAt:           unixTimestamp(item.ExpiresAt),
+			AcceptedAt:          unixTimestamp(item.AcceptedAt),
+			CompletedAt:         unixTimestamp(item.CompletedAt),
 			CreatedAt:           item.CreatedAt.Unix(),
 			UpdatedAt:           item.UpdatedAt.Unix(),
 			SubmittedByMe:       item.SubmittedByMe,
+			SubmissionText:      item.SubmissionText,
+			HasSubmissionImage:  item.SubmissionImagePath != nil && strings.TrimSpace(*item.SubmissionImagePath) != "",
 			CanAccept:           item.CanAccept,
 			CanDecline:          item.CanDecline,
 			CanComplete:         item.CanComplete,
@@ -389,10 +478,10 @@ func toChallengeItemResponses(items []challenges.Challenge) []challengeItemRespo
 	return resp
 }
 
-func unixOrNil(value *time.Time) *int64 {
+func unixTimestamp(value *time.Time) *int64 {
 	if value == nil {
 		return nil
 	}
-	unix := value.Unix()
-	return &unix
+	ts := value.Unix()
+	return &ts
 }

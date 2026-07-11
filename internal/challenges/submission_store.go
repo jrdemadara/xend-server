@@ -73,6 +73,21 @@ func (s *SubmissionStore) Delete(relativePath string) error {
 	return err
 }
 
+func (s *SubmissionStore) ReadImage(relativePath string) ([]byte, string, error) {
+	if strings.TrimSpace(relativePath) == "" {
+		return nil, "", ErrImageRequired
+	}
+	fileName := filepath.Base(relativePath)
+	if fileName == "." || fileName == string(filepath.Separator) || fileName == "" {
+		return nil, "", os.ErrNotExist
+	}
+	data, err := os.ReadFile(filepath.Join(s.rootDir, fileName))
+	if err != nil {
+		return nil, "", err
+	}
+	return data, http.DetectContentType(data), nil
+}
+
 func imageExtensionForType(contentType string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(contentType)) {
 	case "image/jpeg":

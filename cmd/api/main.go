@@ -17,12 +17,16 @@ import (
 	"xend.chat/m/internal/dailycheckin"
 	"xend.chat/m/internal/dailyritual"
 	"xend.chat/m/internal/db"
+	"xend.chat/m/internal/device"
 	"xend.chat/m/internal/logging"
+	"xend.chat/m/internal/message"
 	"xend.chat/m/internal/notify"
 	"xend.chat/m/internal/presence"
 	"xend.chat/m/internal/queue"
 	"xend.chat/m/internal/realtime"
 	"xend.chat/m/internal/redis"
+	"xend.chat/m/internal/relationship"
+	"xend.chat/m/internal/user"
 	"xend.chat/m/services/api"
 	servicerealtime "xend.chat/m/services/realtime"
 )
@@ -53,20 +57,25 @@ func main() {
 	asynqClient := asynq.NewClient(asynq.RedisClientOpt{Addr: cfg.RedisAddr, Password: cfg.RedisPassword, DB: cfg.RedisDB})
 	defer asynqClient.Close()
 
-	repo := auth.NewRepository(pool)
+	authRepo := auth.NewRepository(pool)
+	userRepo := user.NewRepository(pool)
+	deviceRepo := device.NewRepository(pool)
+	relationshipRepo := relationship.NewRepository(pool)
+	messageRepo := message.NewRepository(pool)
 	tm := auth.NewTokenManager(cfg.JWTIssuer, cfg.JWTAccessSecret, cfg.JWTRefreshSecret, cfg.JWTAccessTTL, cfg.JWTRefreshTTL)
 	googleVerifier := &auth.IDTokenGoogleVerifier{Audience: cfg.GoogleOAuthClientID}
 	emailVerifyStore := auth.NewRedisEmailVerificationStore(redisClient)
 	loginAttempts := auth.NewRedisLoginAttemptStore(redisClient)
 	emailEnqueuer := queue.NewVerificationEmailEnqueuer(asynqClient)
-	svc := auth.NewService(repo, tm, googleVerifier, emailVerifyStore, loginAttempts, emailEnqueuer)
+	svc := auth.NewService(authRepo, deviceRepo, tm, googleVerifier, emailVerifyStore, loginAttempts, emailEnqueuer)
 	h := auth.NewHandler(svc)
 	protectedAuthHandler := api.NewProtectedAuthHandler(svc)
-	deviceHandler := api.NewDeviceHandler(repo)
+	userHandler := user.NewHandler(userRepo)
+	deviceHandler := device.NewHandler(deviceRepo)
 	presenceSvc := presence.NewService(redisClient)
-	presenceHandler := api.NewPresenceHandler(presenceSvc, repo)
+	presenceHandler := presence.NewHandler(presenceSvc)
 	hub := realtime.NewHub()
-	realtimeHandler := servicerealtime.NewHandler(tm, hub, presenceSvc, repo)
+	realtimeHandler := servicerealtime.NewHandler(tm, hub, presenceSvc, messageRepo, relationshipRepo)
 	var pushNotifier notify.PushNotifier = notify.NoopPushNotifier{}
 	if cfg.FirebaseCredentialsFile != "" {
 		fcmNotifier, fcmErr := notify.NewFCMNotifier(cfg.FirebaseCredentialsFile)
@@ -79,17 +88,17 @@ func main() {
 	} else {
 		logger.Info("fcm notifier disabled", "reason", "FIREBASE_CREDENTIALS_FILE is empty")
 	}
-	relationshipHandler := api.NewRelationshipHandler(repo, emailEnqueuer, hub, pushNotifier)
+	relationshipHandler := relationship.NewHandler(relationshipRepo, userRepo, deviceRepo, emailEnqueuer, hub, pushNotifier)
 	dailyCheckInRepo := dailycheckin.NewRepository(pool)
-	dailyCheckInHandler := api.NewDailyCheckInHandler(dailyCheckInRepo, hub)
+	dailyCheckInHandler := dailycheckin.NewHandler(dailyCheckInRepo, hub)
 	dailyRitualRepo := dailyritual.NewRepository(pool)
 	dailyRitualStore := dailyritual.NewSubmissionStore("storage/daily-rituals")
-	dailyRitualHandler := api.NewDailyRitualHandler(dailyRitualRepo, dailyRitualStore)
+	dailyRitualHandler := dailyritual.NewHandler(dailyRitualRepo, dailyRitualStore)
 	challengeRepo := challenges.NewRepository(pool)
 	challengeStore := challenges.NewSubmissionStore("storage/challenges")
-	challengeHandler := api.NewChallengeHandler(challengeRepo, challengeStore, hub)
-	messageHandler := api.NewMessageHandler(repo, hub, pushNotifier)
-	router := api.NewRouter(h, protectedAuthHandler, deviceHandler, relationshipHandler, dailyCheckInHandler, dailyRitualHandler, challengeHandler, messageHandler, presenceHandler, realtimeHandler, tm, redisClient)
+	challengeHandler := challenges.NewHandler(challengeRepo, challengeStore, hub)
+	messageHandler := message.NewHandler(messageRepo, userRepo, deviceRepo, hub, pushNotifier)
+	router := api.NewRouter(h, protectedAuthHandler, userHandler, deviceHandler, relationshipHandler, dailyCheckInHandler, dailyRitualHandler, challengeHandler, messageHandler, presenceHandler, realtimeHandler, tm, redisClient)
 
 	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: router, ReadHeaderTimeout: 5 * time.Second}
 	go func() {

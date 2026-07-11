@@ -1,4 +1,4 @@
-package api
+package relationship
 
 import (
 	"errors"
@@ -10,22 +10,33 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"xend.chat/m/internal/auth"
+	"xend.chat/m/internal/device"
 	"xend.chat/m/internal/notify"
 	"xend.chat/m/internal/queue"
 	"xend.chat/m/internal/realtime"
+	"xend.chat/m/internal/user"
 	"xend.chat/m/pkg/httputil"
 	"xend.chat/m/pkg/wsutil"
 )
 
-type RelationshipHandler struct {
-	repo          *auth.Repository
+type Handler struct {
+	repo          *Repository
+	users         *user.Repository
+	devices       *device.Repository
 	emailEnqueuer *queue.VerificationEmailEnqueuer
 	hub           *realtime.Hub
 	pushNotifier  notify.PushNotifier
 }
 
-func NewRelationshipHandler(repo *auth.Repository, emailEnqueuer *queue.VerificationEmailEnqueuer, hub *realtime.Hub, pushNotifier notify.PushNotifier) *RelationshipHandler {
-	return &RelationshipHandler{repo: repo, emailEnqueuer: emailEnqueuer, hub: hub, pushNotifier: pushNotifier}
+func NewHandler(repo *Repository, users *user.Repository, devices *device.Repository, emailEnqueuer *queue.VerificationEmailEnqueuer, hub *realtime.Hub, pushNotifier notify.PushNotifier) *Handler {
+	return &Handler{
+		repo:          repo,
+		users:         users,
+		devices:       devices,
+		emailEnqueuer: emailEnqueuer,
+		hub:           hub,
+		pushNotifier:  pushNotifier,
+	}
 }
 
 type createInviteRequest struct {
@@ -33,7 +44,7 @@ type createInviteRequest struct {
 	Note       *string `json:"note"`
 }
 
-type relationshipSpaceResponse struct {
+type spaceResponse struct {
 	RelationshipSpaceID string  `json:"relationship_space_id"`
 	ConversationID      string  `json:"conversation_id"`
 	Name                *string `json:"name,omitempty"`
@@ -48,13 +59,13 @@ type relationshipSpaceResponse struct {
 	UpdatedAt           int64   `json:"updated_at"`
 }
 
-type relationshipLevelResponse struct {
+type levelResponse struct {
 	Level       int16   `json:"level"`
 	Name        string  `json:"name"`
 	Description *string `json:"description,omitempty"`
 }
 
-type relationshipLevelProgressResponse struct {
+type levelProgressResponse struct {
 	RelationshipSpaceID string `json:"relationship_space_id"`
 	Level               int16  `json:"level"`
 	RequiredPoints      int32  `json:"required_points"`
@@ -64,13 +75,11 @@ type relationshipLevelProgressResponse struct {
 	UpdatedAt           int64  `json:"updated_at"`
 }
 
-type relationshipSpaceMemberResponse struct {
+type memberResponse struct {
 	UserID      string `json:"user_id"`
 	DisplayName string `json:"display_name"`
 	Identifier  string `json:"identifier"`
 }
-
-type setDefaultSpaceRequest struct{}
 
 type configureSpaceAccessRequest struct {
 	Passphrase string  `json:"passphrase"`
@@ -89,8 +98,8 @@ type inviteOutboxResponse struct {
 	CreatedAt         int64   `json:"created_at"`
 }
 
-func (h *RelationshipHandler) CreateInvite(w http.ResponseWriter, r *http.Request) {
-	claims, ok := claimsFromContext(r.Context())
+func (h *Handler) CreateInvite(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.AccessClaimsFromContext(r.Context())
 	if !ok {
 		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
 		return
@@ -107,9 +116,9 @@ func (h *RelationshipHandler) CreateInvite(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	inviteID, inviteeUserID, inviteeEmail, err := h.repo.CreateRelationshipInviteByIdentifier(r.Context(), claims.UserID, req.Identifier, req.Note)
+	inviteID, inviteeUserID, inviteeEmail, err := h.repo.CreateInviteByIdentifier(r.Context(), claims.UserID, req.Identifier, req.Note)
 	if err != nil {
-		if errors.Is(err, auth.ErrInvalidInput) {
+		if errors.Is(err, ErrInvalidInput) {
 			httputil.Error(w, http.StatusBadRequest, "invalid_request", "invalid invite target")
 			return
 		}
@@ -121,10 +130,9 @@ func (h *RelationshipHandler) CreateInvite(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// Best-effort email notification for invite recipient.
-	if h.emailEnqueuer != nil {
-		profile, pErr := h.repo.GetUserProfileByID(r.Context(), claims.UserID)
-		if pErr == nil {
+	if h.emailEnqueuer != nil && h.users != nil {
+		profile, profileErr := h.users.GetProfileByID(r.Context(), claims.UserID)
+		if profileErr == nil {
 			note := ""
 			if req.Note != nil {
 				note = strings.TrimSpace(*req.Note)
@@ -132,6 +140,7 @@ func (h *RelationshipHandler) CreateInvite(w http.ResponseWriter, r *http.Reques
 			_ = h.emailEnqueuer.EnqueueRelationshipInviteEmail(r.Context(), inviteeEmail, profile.DisplayName, profile.Identifier, note)
 		}
 	}
+
 	if h.hub != nil {
 		h.hub.SendToUser(claims.UserID, wsutil.NewEvent("relationship_invite_sent", map[string]string{
 			"invite_id": inviteID,
@@ -142,11 +151,11 @@ func (h *RelationshipHandler) CreateInvite(w http.ResponseWriter, r *http.Reques
 			"invite_id":       inviteID,
 			"inviter_user_id": claims.UserID,
 		}))
-	} else if h.pushNotifier != nil {
-		profile, pErr := h.repo.GetUserProfileByID(r.Context(), claims.UserID)
-		if pErr == nil {
-			tokens, tErr := h.repo.ListActivePushTokensByUser(r.Context(), inviteeUserID)
-			if tErr == nil && len(tokens) > 0 {
+	} else if h.pushNotifier != nil && h.users != nil && h.devices != nil {
+		profile, profileErr := h.users.GetProfileByID(r.Context(), claims.UserID)
+		if profileErr == nil {
+			tokens, tokenErr := h.devices.ListActivePushTokensByUser(r.Context(), inviteeUserID)
+			if tokenErr == nil && len(tokens) > 0 {
 				pushErr := h.pushNotifier.SendToTokens(r.Context(), tokens, notify.PushMessage{
 					Title: fmt.Sprintf("%s invited you", profile.DisplayName),
 					Body:  "Open Xend to respond to the relationship invite.",
@@ -161,95 +170,99 @@ func (h *RelationshipHandler) CreateInvite(w http.ResponseWriter, r *http.Reques
 				} else {
 					slog.Info("push sent", "event", "relationship_invite_received", "invite_id", inviteID, "target_user_id", inviteeUserID, "token_count", len(tokens))
 				}
-			} else if tErr != nil {
-				slog.Error("push token lookup failed", "event", "relationship_invite_received", "invite_id", inviteID, "target_user_id", inviteeUserID, "error", tErr)
+			} else if tokenErr != nil {
+				slog.Error("push token lookup failed", "event", "relationship_invite_received", "invite_id", inviteID, "target_user_id", inviteeUserID, "error", tokenErr)
 			} else {
 				slog.Info("push skipped no active tokens", "event", "relationship_invite_received", "invite_id", inviteID, "target_user_id", inviteeUserID)
 			}
 		}
 	}
+
 	httputil.JSON(w, http.StatusCreated, map[string]string{"invite_id": inviteID})
 }
 
-func (h *RelationshipHandler) Inbox(w http.ResponseWriter, r *http.Request) {
-	claims, ok := claimsFromContext(r.Context())
+func (h *Handler) Inbox(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.AccessClaimsFromContext(r.Context())
 	if !ok {
 		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
 		return
 	}
+
 	items, err := h.repo.ListInviteInbox(r.Context(), claims.UserID)
 	if err != nil {
 		httputil.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		return
 	}
 	if items == nil {
-		items = []auth.RelationshipInvite{}
+		items = []Invite{}
 	}
 	httputil.JSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
-func (h *RelationshipHandler) Outbox(w http.ResponseWriter, r *http.Request) {
-	claims, ok := claimsFromContext(r.Context())
+func (h *Handler) Outbox(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.AccessClaimsFromContext(r.Context())
 	if !ok {
 		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
 		return
 	}
+
 	items, err := h.repo.ListInviteOutbox(r.Context(), claims.UserID)
 	if err != nil {
 		httputil.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		return
 	}
 
-	resp := make([]inviteOutboxResponse, 0, len(items))
-	for _, it := range items {
-		resp = append(resp, inviteOutboxResponse{
-			InviteID:          it.InviteID,
-			InviteeIdentifier: it.InviteeIdentifier,
-			Status:            it.Status,
-			Note:              it.Note,
-			CreatedAt:         it.CreatedAt.Unix(),
+	response := make([]inviteOutboxResponse, 0, len(items))
+	for _, item := range items {
+		response = append(response, inviteOutboxResponse{
+			InviteID:          item.InviteID,
+			InviteeIdentifier: item.InviteeIdentifier,
+			Status:            item.Status,
+			Note:              item.Note,
+			CreatedAt:         item.CreatedAt.Unix(),
 		})
 	}
-	httputil.JSON(w, http.StatusOK, map[string]any{"items": resp})
+	httputil.JSON(w, http.StatusOK, map[string]any{"items": response})
 }
 
-func (h *RelationshipHandler) Accept(w http.ResponseWriter, r *http.Request) {
-	claims, ok := claimsFromContext(r.Context())
+func (h *Handler) Accept(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.AccessClaimsFromContext(r.Context())
 	if !ok {
 		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
 		return
 	}
-	inviteID := r.PathValue("invite_id")
-	if strings.TrimSpace(inviteID) == "" {
+
+	inviteID := strings.TrimSpace(r.PathValue("invite_id"))
+	if inviteID == "" {
 		httputil.Error(w, http.StatusBadRequest, "invalid_request", "invite_id is required")
 		return
 	}
-	spaceID, conversationID, inviterUserID, err := h.repo.AcceptRelationshipInvite(r.Context(), inviteID, claims.UserID)
+
+	spaceID, conversationID, inviterUserID, err := h.repo.AcceptInvite(r.Context(), inviteID, claims.UserID)
 	if err != nil {
-		if errors.Is(err, auth.ErrInviteNotFound) {
+		if errors.Is(err, ErrInviteNotFound) {
 			httputil.Error(w, http.StatusNotFound, "not_found", "invite not found")
 			return
 		}
 		httputil.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		return
 	}
+
 	if h.hub != nil {
-		h.hub.SendToUser(claims.UserID, wsutil.NewEvent("relationship_invite_accepted", map[string]string{
+		event := wsutil.NewEvent("relationship_invite_accepted", map[string]string{
 			"invite_id":             inviteID,
 			"relationship_space_id": spaceID,
 			"conversation_id":       conversationID,
-		}))
-		h.hub.SendToUser(inviterUserID, wsutil.NewEvent("relationship_invite_accepted", map[string]string{
-			"invite_id":             inviteID,
-			"relationship_space_id": spaceID,
-			"conversation_id":       conversationID,
-		}))
+		})
+		h.hub.SendToUser(claims.UserID, event)
+		h.hub.SendToUser(inviterUserID, event)
 	}
-	if h.pushNotifier != nil {
-		profile, pErr := h.repo.GetUserProfileByID(r.Context(), claims.UserID)
-		if pErr == nil {
-			tokens, tErr := h.repo.ListActivePushTokensByUser(r.Context(), inviterUserID)
-			if tErr == nil && len(tokens) > 0 {
+
+	if h.pushNotifier != nil && h.users != nil && h.devices != nil {
+		profile, profileErr := h.users.GetProfileByID(r.Context(), claims.UserID)
+		if profileErr == nil {
+			tokens, tokenErr := h.devices.ListActivePushTokensByUser(r.Context(), inviterUserID)
+			if tokenErr == nil && len(tokens) > 0 {
 				pushErr := h.pushNotifier.SendToTokens(r.Context(), tokens, notify.PushMessage{
 					Title: fmt.Sprintf("%s accepted your invite", profile.DisplayName),
 					Body:  "Open Xend to enter your relationship space.",
@@ -266,52 +279,56 @@ func (h *RelationshipHandler) Accept(w http.ResponseWriter, r *http.Request) {
 				} else {
 					slog.Info("push sent", "event", "relationship_invite_accepted", "invite_id", inviteID, "target_user_id", inviterUserID, "token_count", len(tokens))
 				}
-			} else if tErr != nil {
-				slog.Error("push token lookup failed", "event", "relationship_invite_accepted", "invite_id", inviteID, "target_user_id", inviterUserID, "error", tErr)
+			} else if tokenErr != nil {
+				slog.Error("push token lookup failed", "event", "relationship_invite_accepted", "invite_id", inviteID, "target_user_id", inviterUserID, "error", tokenErr)
 			} else {
 				slog.Info("push skipped no active tokens", "event", "relationship_invite_accepted", "invite_id", inviteID, "target_user_id", inviterUserID)
 			}
 		}
 	}
+
 	httputil.JSON(w, http.StatusOK, map[string]string{
 		"relationship_space_id": spaceID,
 		"conversation_id":       conversationID,
 	})
 }
 
-func (h *RelationshipHandler) Decline(w http.ResponseWriter, r *http.Request) {
-	claims, ok := claimsFromContext(r.Context())
+func (h *Handler) Decline(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.AccessClaimsFromContext(r.Context())
 	if !ok {
 		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
 		return
 	}
-	inviteID := r.PathValue("invite_id")
-	if strings.TrimSpace(inviteID) == "" {
+
+	inviteID := strings.TrimSpace(r.PathValue("invite_id"))
+	if inviteID == "" {
 		httputil.Error(w, http.StatusBadRequest, "invalid_request", "invite_id is required")
 		return
 	}
-	inviterUserID, err := h.repo.DeclineRelationshipInvite(r.Context(), inviteID, claims.UserID)
+
+	inviterUserID, err := h.repo.DeclineInvite(r.Context(), inviteID, claims.UserID)
 	if err != nil {
-		if errors.Is(err, auth.ErrInviteNotFound) {
+		if errors.Is(err, ErrInviteNotFound) {
 			httputil.Error(w, http.StatusNotFound, "not_found", "invite not found")
 			return
 		}
 		httputil.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		return
 	}
+
 	if h.hub != nil {
-		h.hub.SendToUser(claims.UserID, wsutil.NewEvent("relationship_invite_declined", map[string]string{
+		event := wsutil.NewEvent("relationship_invite_declined", map[string]string{
 			"invite_id": inviteID,
-		}))
-		h.hub.SendToUser(inviterUserID, wsutil.NewEvent("relationship_invite_declined", map[string]string{
-			"invite_id": inviteID,
-		}))
+		})
+		h.hub.SendToUser(claims.UserID, event)
+		h.hub.SendToUser(inviterUserID, event)
 	}
-	if h.pushNotifier != nil {
-		profile, pErr := h.repo.GetUserProfileByID(r.Context(), claims.UserID)
-		if pErr == nil {
-			tokens, tErr := h.repo.ListActivePushTokensByUser(r.Context(), inviterUserID)
-			if tErr == nil && len(tokens) > 0 {
+
+	if h.pushNotifier != nil && h.users != nil && h.devices != nil {
+		profile, profileErr := h.users.GetProfileByID(r.Context(), claims.UserID)
+		if profileErr == nil {
+			tokens, tokenErr := h.devices.ListActivePushTokensByUser(r.Context(), inviterUserID)
+			if tokenErr == nil && len(tokens) > 0 {
 				pushErr := h.pushNotifier.SendToTokens(r.Context(), tokens, notify.PushMessage{
 					Title: fmt.Sprintf("%s declined your invite", profile.DisplayName),
 					Body:  "Open Xend to manage your invites.",
@@ -326,70 +343,57 @@ func (h *RelationshipHandler) Decline(w http.ResponseWriter, r *http.Request) {
 				} else {
 					slog.Info("push sent", "event", "relationship_invite_declined", "invite_id", inviteID, "target_user_id", inviterUserID, "token_count", len(tokens))
 				}
-			} else if tErr != nil {
-				slog.Error("push token lookup failed", "event", "relationship_invite_declined", "invite_id", inviteID, "target_user_id", inviterUserID, "error", tErr)
+			} else if tokenErr != nil {
+				slog.Error("push token lookup failed", "event", "relationship_invite_declined", "invite_id", inviteID, "target_user_id", inviterUserID, "error", tokenErr)
 			} else {
 				slog.Info("push skipped no active tokens", "event", "relationship_invite_declined", "invite_id", inviteID, "target_user_id", inviterUserID)
 			}
 		}
 	}
+
 	httputil.JSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-func (h *RelationshipHandler) ListSpaces(w http.ResponseWriter, r *http.Request) {
-	claims, ok := claimsFromContext(r.Context())
+func (h *Handler) ListSpaces(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.AccessClaimsFromContext(r.Context())
 	if !ok {
 		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
 		return
 	}
 
-	items, err := h.repo.ListRelationshipSpacesByUser(r.Context(), claims.UserID)
+	items, err := h.repo.ListSpacesByUser(r.Context(), claims.UserID)
 	if err != nil {
 		httputil.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		return
 	}
 
-	resp := make([]relationshipSpaceResponse, 0, len(items))
-	for _, it := range items {
-		resp = append(resp, relationshipSpaceResponse{
-			RelationshipSpaceID: it.RelationshipSpaceID,
-			ConversationID:      it.ConversationID,
-			Name:                it.Name,
-			CreatedByUserID:     it.CreatedByUserID,
-			CurrentLevel:        it.CurrentLevel,
-			CurrentLevelName:    it.CurrentLevelName,
-			IsDefault:           it.IsDefault,
-			AccessHint:          it.AccessHint,
-			AccessConfigured:    it.AccessConfigured,
-			ArchivedAt:          timeToUnixPtr(it.ArchivedAt),
-			CreatedAt:           it.CreatedAt.Unix(),
-			UpdatedAt:           it.UpdatedAt.Unix(),
-		})
+	response := make([]spaceResponse, 0, len(items))
+	for _, item := range items {
+		response = append(response, toSpaceResponse(item))
 	}
-
-	httputil.JSON(w, http.StatusOK, map[string]any{"items": resp})
+	httputil.JSON(w, http.StatusOK, map[string]any{"items": response})
 }
 
-func (h *RelationshipHandler) ListLevels(w http.ResponseWriter, r *http.Request) {
-	items, err := h.repo.ListRelationshipLevels(r.Context())
+func (h *Handler) ListLevels(w http.ResponseWriter, r *http.Request) {
+	items, err := h.repo.ListLevels(r.Context())
 	if err != nil {
 		httputil.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		return
 	}
 
-	resp := make([]relationshipLevelResponse, 0, len(items))
-	for _, it := range items {
-		resp = append(resp, relationshipLevelResponse{
-			Level:       it.Level,
-			Name:        it.Name,
-			Description: it.Description,
+	response := make([]levelResponse, 0, len(items))
+	for _, item := range items {
+		response = append(response, levelResponse{
+			Level:       item.Level,
+			Name:        item.Name,
+			Description: item.Description,
 		})
 	}
-	httputil.JSON(w, http.StatusOK, map[string]any{"items": resp})
+	httputil.JSON(w, http.StatusOK, map[string]any{"items": response})
 }
 
-func (h *RelationshipHandler) ListLevelProgress(w http.ResponseWriter, r *http.Request) {
-	claims, ok := claimsFromContext(r.Context())
+func (h *Handler) ListLevelProgress(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.AccessClaimsFromContext(r.Context())
 	if !ok {
 		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
 		return
@@ -401,29 +405,29 @@ func (h *RelationshipHandler) ListLevelProgress(w http.ResponseWriter, r *http.R
 		return
 	}
 
-	items, err := h.repo.ListRelationshipLevelProgressBySpace(r.Context(), claims.UserID, spaceID)
+	items, err := h.repo.ListLevelProgressBySpace(r.Context(), claims.UserID, spaceID)
 	if err != nil {
 		httputil.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		return
 	}
 
-	resp := make([]relationshipLevelProgressResponse, 0, len(items))
-	for _, it := range items {
-		resp = append(resp, relationshipLevelProgressResponse{
-			RelationshipSpaceID: it.RelationshipSpaceID,
-			Level:               it.Level,
-			RequiredPoints:      it.RequiredPoints,
-			CurrentPoints:       it.CurrentPoints,
-			UnlockedAt:          timeToUnixPtr(it.UnlockedAt),
-			CreatedAt:           it.CreatedAt.Unix(),
-			UpdatedAt:           it.UpdatedAt.Unix(),
+	response := make([]levelProgressResponse, 0, len(items))
+	for _, item := range items {
+		response = append(response, levelProgressResponse{
+			RelationshipSpaceID: item.RelationshipSpaceID,
+			Level:               item.Level,
+			RequiredPoints:      item.RequiredPoints,
+			CurrentPoints:       item.CurrentPoints,
+			UnlockedAt:          timeToUnixPtr(item.UnlockedAt),
+			CreatedAt:           item.CreatedAt.Unix(),
+			UpdatedAt:           item.UpdatedAt.Unix(),
 		})
 	}
-	httputil.JSON(w, http.StatusOK, map[string]any{"items": resp})
+	httputil.JSON(w, http.StatusOK, map[string]any{"items": response})
 }
 
-func (h *RelationshipHandler) ListMembers(w http.ResponseWriter, r *http.Request) {
-	claims, ok := claimsFromContext(r.Context())
+func (h *Handler) ListMembers(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.AccessClaimsFromContext(r.Context())
 	if !ok {
 		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
 		return
@@ -435,25 +439,25 @@ func (h *RelationshipHandler) ListMembers(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	items, err := h.repo.ListRelationshipSpaceMembers(r.Context(), claims.UserID, spaceID)
+	items, err := h.repo.ListSpaceMembers(r.Context(), claims.UserID, spaceID)
 	if err != nil {
 		httputil.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 		return
 	}
 
-	resp := make([]relationshipSpaceMemberResponse, 0, len(items))
-	for _, it := range items {
-		resp = append(resp, relationshipSpaceMemberResponse{
-			UserID:      it.UserID,
-			DisplayName: it.DisplayName,
-			Identifier:  it.Identifier,
+	response := make([]memberResponse, 0, len(items))
+	for _, item := range items {
+		response = append(response, memberResponse{
+			UserID:      item.UserID,
+			DisplayName: item.DisplayName,
+			Identifier:  item.Identifier,
 		})
 	}
-	httputil.JSON(w, http.StatusOK, map[string]any{"items": resp})
+	httputil.JSON(w, http.StatusOK, map[string]any{"items": response})
 }
 
-func (h *RelationshipHandler) SetDefaultSpace(w http.ResponseWriter, r *http.Request) {
-	claims, ok := claimsFromContext(r.Context())
+func (h *Handler) SetDefaultSpace(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.AccessClaimsFromContext(r.Context())
 	if !ok {
 		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
 		return
@@ -465,8 +469,8 @@ func (h *RelationshipHandler) SetDefaultSpace(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	if err := h.repo.SetDefaultRelationshipSpace(r.Context(), claims.UserID, spaceID); err != nil {
-		if errors.Is(err, auth.ErrRelationshipSpaceNotFound) {
+	if err := h.repo.SetDefaultSpace(r.Context(), claims.UserID, spaceID); err != nil {
+		if errors.Is(err, ErrSpaceNotFound) {
 			httputil.Error(w, http.StatusNotFound, "not_found", "relationship space not found")
 			return
 		}
@@ -476,8 +480,8 @@ func (h *RelationshipHandler) SetDefaultSpace(w http.ResponseWriter, r *http.Req
 	httputil.JSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-func (h *RelationshipHandler) ConfigureSpaceAccess(w http.ResponseWriter, r *http.Request) {
-	claims, ok := claimsFromContext(r.Context())
+func (h *Handler) ConfigureSpaceAccess(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.AccessClaimsFromContext(r.Context())
 	if !ok {
 		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
 		return
@@ -500,8 +504,8 @@ func (h *RelationshipHandler) ConfigureSpaceAccess(w http.ResponseWriter, r *htt
 		return
 	}
 
-	if err := h.repo.UpsertRelationshipSpaceAccess(r.Context(), claims.UserID, spaceID, req.Passphrase, req.Hint); err != nil {
-		if errors.Is(err, auth.ErrRelationshipSpaceNotFound) {
+	if err := h.repo.UpsertSpaceAccess(r.Context(), claims.UserID, spaceID, req.Passphrase, req.Hint); err != nil {
+		if errors.Is(err, ErrSpaceNotFound) {
 			httputil.Error(w, http.StatusNotFound, "not_found", "relationship space not found")
 			return
 		}
@@ -511,8 +515,8 @@ func (h *RelationshipHandler) ConfigureSpaceAccess(w http.ResponseWriter, r *htt
 	httputil.JSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-func (h *RelationshipHandler) UnlockSpace(w http.ResponseWriter, r *http.Request) {
-	claims, ok := claimsFromContext(r.Context())
+func (h *Handler) UnlockSpace(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.AccessClaimsFromContext(r.Context())
 	if !ok {
 		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
 		return
@@ -529,9 +533,9 @@ func (h *RelationshipHandler) UnlockSpace(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	item, err := h.repo.UnlockRelationshipSpace(r.Context(), claims.UserID, req.Passphrase)
+	item, err := h.repo.UnlockSpace(r.Context(), claims.UserID, req.Passphrase)
 	if err != nil {
-		if errors.Is(err, auth.ErrRelationshipSpaceAccessNotFound) {
+		if errors.Is(err, ErrSpaceAccessNotFound) {
 			httputil.Error(w, http.StatusNotFound, "not_found", "hidden space not found")
 			return
 		}
@@ -539,7 +543,11 @@ func (h *RelationshipHandler) UnlockSpace(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	httputil.JSON(w, http.StatusOK, relationshipSpaceResponse{
+	httputil.JSON(w, http.StatusOK, toSpaceResponse(item))
+}
+
+func toSpaceResponse(item SpaceSummary) spaceResponse {
+	return spaceResponse{
 		RelationshipSpaceID: item.RelationshipSpaceID,
 		ConversationID:      item.ConversationID,
 		Name:                item.Name,
@@ -552,13 +560,13 @@ func (h *RelationshipHandler) UnlockSpace(w http.ResponseWriter, r *http.Request
 		ArchivedAt:          timeToUnixPtr(item.ArchivedAt),
 		CreatedAt:           item.CreatedAt.Unix(),
 		UpdatedAt:           item.UpdatedAt.Unix(),
-	})
+	}
 }
 
-func timeToUnixPtr(v *time.Time) *int64 {
-	if v == nil {
+func timeToUnixPtr(value *time.Time) *int64 {
+	if value == nil {
 		return nil
 	}
-	ts := v.Unix()
+	ts := value.Unix()
 	return &ts
 }

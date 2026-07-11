@@ -1,6 +1,6 @@
-package auth
+package device
 
-type DeviceRegisterRequest struct {
+type RegisterRequest struct {
 	DeviceName        string `json:"device_name"`
 	Platform          string `json:"platform"`
 	RegistrationID    int    `json:"registration_id"`

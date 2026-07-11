@@ -9,10 +9,6 @@ import (
 	"xend.chat/m/pkg/httputil"
 )
 
-type authContextKey string
-
-const claimsContextKey authContextKey = "access_claims"
-
 func requireAuth(tokens *auth.TokenManager, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		raw := strings.TrimSpace(r.Header.Get("Authorization"))
@@ -26,7 +22,7 @@ func requireAuth(tokens *auth.TokenManager, next http.HandlerFunc) http.HandlerF
 			httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
 			return
 		}
-		ctx := context.WithValue(r.Context(), claimsContextKey, claims)
+		ctx := auth.WithAccessClaims(r.Context(), claims)
 		next(w, r.WithContext(ctx))
 	}
 }
@@ -45,14 +41,12 @@ func requireAuthMiddleware(tokens *auth.TokenManager) func(http.Handler) http.Ha
 				httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
 				return
 			}
-			ctx := context.WithValue(r.Context(), claimsContextKey, claims)
+			ctx := auth.WithAccessClaims(r.Context(), claims)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }
 
 func claimsFromContext(ctx context.Context) (auth.AccessClaims, bool) {
-	v := ctx.Value(claimsContextKey)
-	claims, ok := v.(auth.AccessClaims)
-	return claims, ok
+	return auth.AccessClaimsFromContext(ctx)
 }

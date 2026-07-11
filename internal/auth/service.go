@@ -26,6 +26,7 @@ var (
 
 type Service struct {
 	repo             *Repository
+	devices          DeviceStore
 	tokens           *TokenManager
 	googleVerifier   GoogleVerifier
 	emailVerifyStore EmailVerificationStore
@@ -34,9 +35,15 @@ type Service struct {
 	emailVerifyTTL   time.Duration
 }
 
-func NewService(repo *Repository, tokens *TokenManager, googleVerifier GoogleVerifier, emailVerifyStore EmailVerificationStore, loginAttempts LoginAttemptStore, emailEnqueuer VerificationEmailEnqueuer) *Service {
+type DeviceStore interface {
+	GetActiveDeviceByName(ctx context.Context, userID, deviceName string) (string, error)
+	EnsureActiveDevice(ctx context.Context, userID, deviceName, platform string, registrationID int, identityKeyPublic string) (string, error)
+}
+
+func NewService(repo *Repository, devices DeviceStore, tokens *TokenManager, googleVerifier GoogleVerifier, emailVerifyStore EmailVerificationStore, loginAttempts LoginAttemptStore, emailEnqueuer VerificationEmailEnqueuer) *Service {
 	return &Service{
 		repo:             repo,
+		devices:          devices,
 		tokens:           tokens,
 		googleVerifier:   googleVerifier,
 		emailVerifyStore: emailVerifyStore,
@@ -173,7 +180,7 @@ func (s *Service) Login(ctx context.Context, req LoginRequest, clientIP string) 
 		return AuthResponse{}, ErrInvalidCredentials
 	}
 
-	d, err := s.repo.GetActiveDeviceByName(ctx, u.ID, req.DeviceName)
+	d, err := s.devices.GetActiveDeviceByName(ctx, u.ID, req.DeviceName)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return AuthResponse{}, ErrDeviceNotFound
@@ -183,7 +190,7 @@ func (s *Service) Login(ctx context.Context, req LoginRequest, clientIP string) 
 	if s.loginAttempts != nil {
 		_ = s.loginAttempts.Clear(ctx, req.Email, clientIP)
 	}
-	return s.issueSession(ctx, u.ID, d.ID)
+	return s.issueSession(ctx, u.ID, d)
 }
 
 func (s *Service) GoogleSignIn(ctx context.Context, req GoogleAuthRequest) (AuthResponse, error) {
@@ -248,12 +255,12 @@ func (s *Service) GoogleSignIn(ctx context.Context, req GoogleAuthRequest) (Auth
 		return AuthResponse{}, err
 	}
 
-	d, err := s.repo.EnsureActiveDevice(ctx, userID, req.DeviceName, req.Platform, req.RegistrationID, req.IdentityKeyPublic)
+	d, err := s.devices.EnsureActiveDevice(ctx, userID, req.DeviceName, req.Platform, req.RegistrationID, req.IdentityKeyPublic)
 	if err != nil {
 		return AuthResponse{}, err
 	}
 
-	return s.issueSession(ctx, userID, d.ID)
+	return s.issueSession(ctx, userID, d)
 }
 
 func (s *Service) Refresh(ctx context.Context, rawRefreshToken string) (TokenRefreshResponse, error) {

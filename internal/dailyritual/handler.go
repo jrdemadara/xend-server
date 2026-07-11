@@ -1,31 +1,32 @@
-package api
+package dailyritual
 
 import (
 	"errors"
+	"mime/multipart"
 	"net/http"
 	"strings"
 
-	"xend.chat/m/internal/dailyritual"
+	"xend.chat/m/internal/auth"
 	"xend.chat/m/pkg/httputil"
 )
 
-type DailyRitualHandler struct {
-	repo            *dailyritual.Repository
-	submissionStore *dailyritual.SubmissionStore
+type Handler struct {
+	repo            *Repository
+	submissionStore *SubmissionStore
 }
 
-func NewDailyRitualHandler(repo *dailyritual.Repository, submissionStore *dailyritual.SubmissionStore) *DailyRitualHandler {
-	return &DailyRitualHandler{
+func NewHandler(repo *Repository, submissionStore *SubmissionStore) *Handler {
+	return &Handler{
 		repo:            repo,
 		submissionStore: submissionStore,
 	}
 }
 
-type submitDailyRitualRequest struct {
+type submitRequest struct {
 	TextResponse *string `json:"text_response"`
 }
 
-type dailyRitualTemplateResponse struct {
+type templateResponse struct {
 	TemplateID     string  `json:"template_id"`
 	Slug           string  `json:"slug"`
 	Title          string  `json:"title"`
@@ -42,14 +43,14 @@ type dailyRitualTemplateResponse struct {
 	DisplayOrder   int16   `json:"display_order"`
 }
 
-type dailyRitualOverviewResponse struct {
-	RelationshipSpaceID string                        `json:"relationship_space_id"`
-	RitualDate          string                        `json:"ritual_date"`
-	TodayRitual         *dailyRitualAssignedResponse  `json:"today_ritual,omitempty"`
-	History             []dailyRitualAssignedResponse `json:"history"`
+type overviewResponse struct {
+	RelationshipSpaceID string                     `json:"relationship_space_id"`
+	RitualDate          string                     `json:"ritual_date"`
+	TodayRitual         *assignedResponse          `json:"today_ritual,omitempty"`
+	History             []assignedResponse         `json:"history"`
 }
 
-type dailyRitualAssignedResponse struct {
+type assignedResponse struct {
 	AssignmentID   string  `json:"assignment_id"`
 	RitualDate     string  `json:"ritual_date"`
 	Title          string  `json:"title"`
@@ -70,8 +71,8 @@ type dailyRitualAssignedResponse struct {
 	CanSubmit      bool    `json:"can_submit"`
 }
 
-func (h *DailyRitualHandler) ListTemplates(w http.ResponseWriter, r *http.Request) {
-	if _, ok := claimsFromContext(r.Context()); !ok {
+func (h *Handler) ListTemplates(w http.ResponseWriter, r *http.Request) {
+	if _, ok := auth.AccessClaimsFromContext(r.Context()); !ok {
 		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
 		return
 	}
@@ -82,9 +83,9 @@ func (h *DailyRitualHandler) ListTemplates(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	resp := make([]dailyRitualTemplateResponse, 0, len(items))
+	resp := make([]templateResponse, 0, len(items))
 	for _, item := range items {
-		resp = append(resp, dailyRitualTemplateResponse{
+		resp = append(resp, templateResponse{
 			TemplateID:     item.ID,
 			Slug:           item.Slug,
 			Title:          item.Title,
@@ -105,8 +106,8 @@ func (h *DailyRitualHandler) ListTemplates(w http.ResponseWriter, r *http.Reques
 	httputil.JSON(w, http.StatusOK, map[string]any{"items": resp})
 }
 
-func (h *DailyRitualHandler) GetOverview(w http.ResponseWriter, r *http.Request) {
-	claims, ok := claimsFromContext(r.Context())
+func (h *Handler) GetOverview(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.AccessClaimsFromContext(r.Context())
 	if !ok {
 		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
 		return
@@ -124,16 +125,16 @@ func (h *DailyRitualHandler) GetOverview(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	httputil.JSON(w, http.StatusOK, dailyRitualOverviewResponse{
+	httputil.JSON(w, http.StatusOK, overviewResponse{
 		RelationshipSpaceID: overview.RelationshipSpaceID,
 		RitualDate:          overview.RitualDate,
-		TodayRitual:         toDailyRitualAssignedResponse(overview.TodayRitual),
-		History:             toDailyRitualAssignedListResponse(overview.History),
+		TodayRitual:         toAssignedResponse(overview.TodayRitual),
+		History:             toAssignedListResponse(overview.History),
 	})
 }
 
-func (h *DailyRitualHandler) Submit(w http.ResponseWriter, r *http.Request) {
-	claims, ok := claimsFromContext(r.Context())
+func (h *Handler) Submit(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.AccessClaimsFromContext(r.Context())
 	if !ok {
 		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
 		return
@@ -166,61 +167,95 @@ func (h *DailyRitualHandler) Submit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	httputil.JSON(w, http.StatusOK, dailyRitualOverviewResponse{
+	httputil.JSON(w, http.StatusOK, overviewResponse{
 		RelationshipSpaceID: overview.RelationshipSpaceID,
 		RitualDate:          overview.RitualDate,
-		TodayRitual:         toDailyRitualAssignedResponse(overview.TodayRitual),
-		History:             toDailyRitualAssignedListResponse(overview.History),
+		TodayRitual:         toAssignedResponse(overview.TodayRitual),
+		History:             toAssignedListResponse(overview.History),
 	})
 }
 
-func (h *DailyRitualHandler) parseSubmissionRequest(r *http.Request) (dailyritual.Submission, string, error) {
+func (h *Handler) parseSubmissionRequest(r *http.Request) (Submission, string, error) {
 	contentType := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type")))
 	if strings.HasPrefix(contentType, "multipart/form-data") {
 		return h.parseMultipartSubmissionRequest(r)
 	}
 
-	var req submitDailyRitualRequest
+	var req submitRequest
 	if err := httputil.DecodeJSON(r, &req); err != nil {
-		return dailyritual.Submission{}, "", errors.New("invalid JSON body")
+		return Submission{}, "", errors.New("invalid JSON body")
 	}
-	return dailyritual.Submission{
+	return Submission{
 		TextResponse: req.TextResponse,
 	}, "", nil
 }
 
-func (h *DailyRitualHandler) parseMultipartSubmissionRequest(r *http.Request) (dailyritual.Submission, string, error) {
+func (h *Handler) parseMultipartSubmissionRequest(r *http.Request) (Submission, string, error) {
 	if err := r.ParseMultipartForm(9 << 20); err != nil {
-		return dailyritual.Submission{}, "", errors.New("invalid multipart body")
+		return Submission{}, "", errors.New("invalid multipart body")
 	}
 
 	var storedPath string
 	var imagePath *string
-	file, _, err := r.FormFile("image")
+	file, err := openUploadedImageFile(r, "image")
 	if err != nil && !errors.Is(err, http.ErrMissingFile) {
-		return dailyritual.Submission{}, "", errors.New("invalid image upload")
+		return Submission{}, "", errors.New("invalid image upload")
 	}
 	if err == nil {
 		defer file.Close()
 		if h.submissionStore == nil {
-			return dailyritual.Submission{}, "", errors.New("image uploads are unavailable")
+			return Submission{}, "", errors.New("image uploads are unavailable")
 		}
 		path, saveErr := h.submissionStore.SaveImage(file)
 		if saveErr != nil {
-			return dailyritual.Submission{}, "", saveErr
+			return Submission{}, "", saveErr
 		}
 		storedPath = path
 		imagePath = &storedPath
 	}
 
-	textResponse := normalizeOptionalText(r.FormValue("text_response"))
-	return dailyritual.Submission{
+	textResponse := normalizeFormText(r.FormValue("text_response"))
+	return Submission{
 		TextResponse: textResponse,
 		ImagePath:    imagePath,
 	}, storedPath, nil
 }
 
-func normalizeOptionalText(value string) *string {
+func openUploadedImageFile(r *http.Request, fieldName string) (multipart.File, error) {
+	file, _, err := r.FormFile(fieldName)
+	if err == nil || !errors.Is(err, http.ErrMissingFile) {
+		return file, err
+	}
+
+	form := r.MultipartForm
+	if form == nil {
+		return nil, http.ErrMissingFile
+	}
+
+	for _, fallbackKey := range []string{"file", "photo", "attachment"} {
+		headers := form.File[fallbackKey]
+		if len(headers) == 0 {
+			continue
+		}
+		return headers[0].Open()
+	}
+
+	var onlyHeader *multipart.FileHeader
+	for _, headers := range form.File {
+		for _, header := range headers {
+			if onlyHeader != nil {
+				return nil, http.ErrMissingFile
+			}
+			onlyHeader = header
+		}
+	}
+	if onlyHeader == nil {
+		return nil, http.ErrMissingFile
+	}
+	return onlyHeader.Open()
+}
+
+func normalizeFormText(value string) *string {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
 		return nil
@@ -228,33 +263,33 @@ func normalizeOptionalText(value string) *string {
 	return &trimmed
 }
 
-func (h *DailyRitualHandler) writeError(w http.ResponseWriter, err error) {
+func (h *Handler) writeError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, dailyritual.ErrRelationshipSpaceNotFound):
+	case errors.Is(err, ErrRelationshipSpaceNotFound):
 		httputil.Error(w, http.StatusNotFound, "not_found", "relationship space not found")
-	case errors.Is(err, dailyritual.ErrAssignmentNotFound):
+	case errors.Is(err, ErrAssignmentNotFound):
 		httputil.Error(w, http.StatusNotFound, "not_found", "daily ritual assignment not found")
-	case errors.Is(err, dailyritual.ErrAssignmentUnavailable):
+	case errors.Is(err, ErrAssignmentUnavailable):
 		httputil.Error(w, http.StatusConflict, "ritual_unavailable", "daily ritual is no longer available")
-	case errors.Is(err, dailyritual.ErrSubmissionNotAllowed):
+	case errors.Is(err, ErrSubmissionNotAllowed):
 		httputil.Error(w, http.StatusForbidden, "submission_not_allowed", "daily ritual submission is not allowed")
-	case errors.Is(err, dailyritual.ErrTextResponseRequired):
+	case errors.Is(err, ErrTextResponseRequired):
 		httputil.Error(w, http.StatusBadRequest, "text_response_required", "text response is required")
-	case errors.Is(err, dailyritual.ErrImageRequired):
+	case errors.Is(err, ErrImageRequired):
 		httputil.Error(w, http.StatusBadRequest, "image_required", "image is required")
-	case errors.Is(err, dailyritual.ErrUnsupportedSubmissionType):
+	case errors.Is(err, ErrUnsupportedSubmissionType):
 		httputil.Error(w, http.StatusUnprocessableEntity, "unsupported_submission_type", "daily ritual submission type is not supported yet")
-	case errors.Is(err, dailyritual.ErrInvalidTimezone):
+	case errors.Is(err, ErrInvalidTimezone):
 		httputil.Error(w, http.StatusUnprocessableEntity, "invalid_timezone", "relationship space timezone is invalid")
 	default:
 		httputil.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
 	}
 }
 
-func toDailyRitualAssignedListResponse(items []dailyritual.AssignedRitual) []dailyRitualAssignedResponse {
-	resp := make([]dailyRitualAssignedResponse, 0, len(items))
+func toAssignedListResponse(items []AssignedRitual) []assignedResponse {
+	resp := make([]assignedResponse, 0, len(items))
 	for _, item := range items {
-		resp = append(resp, dailyRitualAssignedResponse{
+		resp = append(resp, assignedResponse{
 			AssignmentID:   item.AssignmentID,
 			RitualDate:     item.RitualDate,
 			Title:          item.Title,
@@ -278,11 +313,11 @@ func toDailyRitualAssignedListResponse(items []dailyritual.AssignedRitual) []dai
 	return resp
 }
 
-func toDailyRitualAssignedResponse(item *dailyritual.AssignedRitual) *dailyRitualAssignedResponse {
+func toAssignedResponse(item *AssignedRitual) *assignedResponse {
 	if item == nil {
 		return nil
 	}
-	return &dailyRitualAssignedResponse{
+	return &assignedResponse{
 		AssignmentID:   item.AssignmentID,
 		RitualDate:     item.RitualDate,
 		Title:          item.Title,

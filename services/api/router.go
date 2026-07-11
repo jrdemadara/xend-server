@@ -7,11 +7,19 @@ import (
 	"github.com/go-chi/chi/v5"
 	goredis "github.com/redis/go-redis/v9"
 	"xend.chat/m/internal/auth"
+	"xend.chat/m/internal/challenges"
+	"xend.chat/m/internal/dailycheckin"
+	"xend.chat/m/internal/dailyritual"
+	"xend.chat/m/internal/device"
+	"xend.chat/m/internal/message"
+	"xend.chat/m/internal/presence"
+	"xend.chat/m/internal/relationship"
+	"xend.chat/m/internal/user"
 	"xend.chat/m/pkg/httputil"
 	servicerealtime "xend.chat/m/services/realtime"
 )
 
-func NewRouter(authHandler *auth.Handler, protectedAuthHandler *ProtectedAuthHandler, deviceHandler *DeviceHandler, relationshipHandler *RelationshipHandler, dailyCheckInHandler *DailyCheckInHandler, dailyRitualHandler *DailyRitualHandler, challengeHandler *ChallengeHandler, messageHandler *MessageHandler, presenceHandler *PresenceHandler, realtimeHandler *servicerealtime.Handler, tokens *auth.TokenManager, redisClient *goredis.Client) http.Handler {
+func NewRouter(authHandler *auth.Handler, protectedAuthHandler *ProtectedAuthHandler, userHandler *user.Handler, deviceHandler *device.Handler, relationshipHandler *relationship.Handler, dailyCheckInHandler *dailycheckin.Handler, dailyRitualHandler *dailyritual.Handler, challengeHandler *challenges.Handler, messageHandler *message.Handler, presenceHandler *presence.Handler, realtimeHandler *servicerealtime.Handler, tokens *auth.TokenManager, redisClient *goredis.Client) http.Handler {
 	r := chi.NewRouter()
 	rl := newAuthRateLimiter(redisClient, 30, time.Minute)
 
@@ -42,26 +50,7 @@ func NewRouter(authHandler *auth.Handler, protectedAuthHandler *ProtectedAuthHan
 			})
 
 			protected.Route("/users", func(ur chi.Router) {
-				ur.Get("/me", func(w http.ResponseWriter, r *http.Request) {
-					claims, ok := claimsFromContext(r.Context())
-					if !ok {
-						httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
-						return
-					}
-					profile, err := deviceHandler.repo.GetUserProfileByID(r.Context(), claims.UserID)
-					if err != nil {
-						httputil.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
-						return
-					}
-					httputil.JSON(w, http.StatusOK, auth.UserProfileResponse{
-						UserID:      profile.ID,
-						DeviceID:    claims.DeviceID,
-						DisplayName: profile.DisplayName,
-						Email:       profile.Email,
-						AvatarURL:   profile.AvatarURL,
-						Identifier:  profile.Identifier,
-					})
-				})
+				ur.Get("/me", userHandler.Me)
 				ur.Get("/{user_id}/prekeys", deviceHandler.GetPrekeys)
 				ur.Get("/{user_id}/presence", presenceHandler.GetUserPresence)
 			})
@@ -96,6 +85,7 @@ func NewRouter(authHandler *auth.Handler, protectedAuthHandler *ProtectedAuthHan
 				sr.Post("/{space_id}/challenges/{challenge_id}/accept", challengeHandler.Accept)
 				sr.Post("/{space_id}/challenges/{challenge_id}/decline", challengeHandler.Decline)
 				sr.Post("/{space_id}/challenges/{challenge_id}/complete", challengeHandler.Complete)
+				sr.Get("/{space_id}/challenges/{challenge_id}/submission-image", challengeHandler.GetSubmissionImage)
 				sr.Get("/{space_id}/level-progress", relationshipHandler.ListLevelProgress)
 				sr.Get("/{space_id}/members", relationshipHandler.ListMembers)
 				sr.Put("/{space_id}/default", relationshipHandler.SetDefaultSpace)

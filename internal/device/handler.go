@@ -1,4 +1,4 @@
-package api
+package device
 
 import (
 	"errors"
@@ -11,22 +11,22 @@ import (
 	"xend.chat/m/pkg/httputil"
 )
 
-type DeviceHandler struct {
-	repo *auth.Repository
+type Handler struct {
+	repo *Repository
 }
 
-func NewDeviceHandler(repo *auth.Repository) *DeviceHandler {
-	return &DeviceHandler{repo: repo}
+func NewHandler(repo *Repository) *Handler {
+	return &Handler{repo: repo}
 }
 
-func (h *DeviceHandler) RegisterDevice(w http.ResponseWriter, r *http.Request) {
-	claims, ok := claimsFromContext(r.Context())
+func (h *Handler) RegisterDevice(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.AccessClaimsFromContext(r.Context())
 	if !ok {
 		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
 		return
 	}
 
-	var req auth.DeviceRegisterRequest
+	var req RegisterRequest
 	if err := httputil.DecodeJSON(r, &req); err != nil {
 		httputil.Error(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
 		return
@@ -46,17 +46,19 @@ func (h *DeviceHandler) RegisterDevice(w http.ResponseWriter, r *http.Request) {
 	httputil.JSON(w, http.StatusCreated, map[string]string{"device_id": deviceID})
 }
 
-func (h *DeviceHandler) UpsertSignedPrekey(w http.ResponseWriter, r *http.Request) {
-	claims, ok := claimsFromContext(r.Context())
+func (h *Handler) UpsertSignedPrekey(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.AccessClaimsFromContext(r.Context())
 	if !ok {
 		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
 		return
 	}
+
 	deviceID := r.PathValue("device_id")
 	if deviceID == "" {
 		httputil.Error(w, http.StatusBadRequest, "invalid_request", "device_id is required")
 		return
 	}
+
 	owns, err := h.repo.DeviceBelongsToUser(r.Context(), deviceID, claims.UserID)
 	if err != nil {
 		httputil.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
@@ -68,7 +70,7 @@ func (h *DeviceHandler) UpsertSignedPrekey(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	var req auth.SignedPrekeyRequest
+	var req SignedPrekeyRequest
 	if err := httputil.DecodeJSON(r, &req); err != nil {
 		httputil.Error(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
 		return
@@ -85,12 +87,13 @@ func (h *DeviceHandler) UpsertSignedPrekey(w http.ResponseWriter, r *http.Reques
 	httputil.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-func (h *DeviceHandler) UploadOneTimePrekeys(w http.ResponseWriter, r *http.Request) {
-	claims, ok := claimsFromContext(r.Context())
+func (h *Handler) UploadOneTimePrekeys(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.AccessClaimsFromContext(r.Context())
 	if !ok {
 		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
 		return
 	}
+
 	deviceID := r.PathValue("device_id")
 	owns, err := h.repo.DeviceBelongsToUser(r.Context(), deviceID, claims.UserID)
 	if err != nil {
@@ -102,7 +105,7 @@ func (h *DeviceHandler) UploadOneTimePrekeys(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	var req auth.OneTimePrekeyBatchRequest
+	var req OneTimePrekeyBatchRequest
 	if err := httputil.DecodeJSON(r, &req); err != nil {
 		httputil.Error(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
 		return
@@ -120,17 +123,19 @@ func (h *DeviceHandler) UploadOneTimePrekeys(w http.ResponseWriter, r *http.Requ
 	httputil.JSON(w, http.StatusCreated, map[string]int64{"inserted_count": inserted})
 }
 
-func (h *DeviceHandler) UpsertKyberPrekey(w http.ResponseWriter, r *http.Request) {
-	claims, ok := claimsFromContext(r.Context())
+func (h *Handler) UpsertKyberPrekey(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.AccessClaimsFromContext(r.Context())
 	if !ok {
 		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
 		return
 	}
+
 	deviceID := r.PathValue("device_id")
 	if deviceID == "" {
 		httputil.Error(w, http.StatusBadRequest, "invalid_request", "device_id is required")
 		return
 	}
+
 	owns, err := h.repo.DeviceBelongsToUser(r.Context(), deviceID, claims.UserID)
 	if err != nil {
 		httputil.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
@@ -141,7 +146,7 @@ func (h *DeviceHandler) UpsertKyberPrekey(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	var req auth.KyberPrekeyRequest
+	var req KyberPrekeyRequest
 	if err := httputil.DecodeJSON(r, &req); err != nil {
 		httputil.Error(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
 		return
@@ -158,12 +163,13 @@ func (h *DeviceHandler) UpsertKyberPrekey(w http.ResponseWriter, r *http.Request
 	httputil.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-func (h *DeviceHandler) UpsertPushToken(w http.ResponseWriter, r *http.Request) {
-	claims, ok := claimsFromContext(r.Context())
+func (h *Handler) UpsertPushToken(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.AccessClaimsFromContext(r.Context())
 	if !ok {
 		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
 		return
 	}
+
 	deviceID := r.PathValue("device_id")
 	owns, err := h.repo.DeviceBelongsToUser(r.Context(), deviceID, claims.UserID)
 	if err != nil {
@@ -175,7 +181,7 @@ func (h *DeviceHandler) UpsertPushToken(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	var req auth.PushTokenRequest
+	var req PushTokenRequest
 	if err := httputil.DecodeJSON(r, &req); err != nil {
 		httputil.Error(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
 		return
@@ -195,12 +201,13 @@ func (h *DeviceHandler) UpsertPushToken(w http.ResponseWriter, r *http.Request) 
 	httputil.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-func (h *DeviceHandler) GetPrekeys(w http.ResponseWriter, r *http.Request) {
-	_, ok := claimsFromContext(r.Context())
+func (h *Handler) GetPrekeys(w http.ResponseWriter, r *http.Request) {
+	_, ok := auth.AccessClaimsFromContext(r.Context())
 	if !ok {
 		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
 		return
 	}
+
 	targetUserID := r.PathValue("user_id")
 	if targetUserID == "" {
 		httputil.Error(w, http.StatusBadRequest, "invalid_request", "user_id is required")

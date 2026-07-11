@@ -25,6 +25,11 @@ type dbtx interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
+type challengeSubmissionMedia struct {
+	TextResponse *string
+	ImagePath    *string
+}
+
 type spaceContext struct {
 	RelationshipSpaceID string
 	CurrentLevel        int16
@@ -464,6 +469,8 @@ func (r *Repository) listChallengesByRole(ctx context.Context, q dbtx, userID, s
 		       c.completed_at,
 		       c.created_at,
 		       c.updated_at,
+		       submission.text_response,
+		       submission.image_path,
 		       EXISTS (
 		           SELECT 1
 		           FROM relationship_space_challenge_submissions s
@@ -477,6 +484,14 @@ func (r *Repository) listChallengesByRole(ctx context.Context, q dbtx, userID, s
 		  ON su.id = c.sender_user_id
 		JOIN users ru
 		  ON ru.id = c.receiver_user_id
+		LEFT JOIN LATERAL (
+			SELECT s.text_response,
+			       s.image_path
+			FROM relationship_space_challenge_submissions s
+			WHERE s.challenge_id = c.id
+			ORDER BY s.submitted_at DESC, s.created_at DESC
+			LIMIT 1
+		) submission ON TRUE
 		WHERE c.relationship_space_id = $1
 		  AND `+whereClause+`
 		ORDER BY c.created_at DESC
@@ -521,6 +536,8 @@ func (r *Repository) loadChallengeByID(ctx context.Context, q dbtx, userID, spac
 		       c.completed_at,
 		       c.created_at,
 		       c.updated_at,
+		       submission.text_response,
+		       submission.image_path,
 		       EXISTS (
 		           SELECT 1
 		           FROM relationship_space_challenge_submissions s
@@ -534,6 +551,14 @@ func (r *Repository) loadChallengeByID(ctx context.Context, q dbtx, userID, spac
 		  ON su.id = c.sender_user_id
 		JOIN users ru
 		  ON ru.id = c.receiver_user_id
+		LEFT JOIN LATERAL (
+			SELECT s.text_response,
+			       s.image_path
+			FROM relationship_space_challenge_submissions s
+			WHERE s.challenge_id = c.id
+			ORDER BY s.submitted_at DESC, s.created_at DESC
+			LIMIT 1
+		) submission ON TRUE
 		WHERE c.relationship_space_id = $1
 		  AND c.id = $2
 		  AND (c.sender_user_id = $3 OR c.receiver_user_id = $3)
@@ -554,10 +579,12 @@ func (r *Repository) loadChallengeByID(ctx context.Context, q dbtx, userID, spac
 
 func scanChallenge(scanner interface{ Scan(dest ...any) error }, userID string) (Challenge, error) {
 	var (
-		item      Challenge
-		status    string
-		note      *string
-		expiresAt *time.Time
+		item            Challenge
+		status          string
+		note            *string
+		expiresAt       *time.Time
+		submissionText  *string
+		submissionImage *string
 	)
 	err := scanner.Scan(
 		&item.ChallengeID,
@@ -581,6 +608,8 @@ func scanChallenge(scanner interface{ Scan(dest ...any) error }, userID string) 
 		&item.CompletedAt,
 		&item.CreatedAt,
 		&item.UpdatedAt,
+		&submissionText,
+		&submissionImage,
 		&item.SubmittedByMe,
 	)
 	if err != nil {
@@ -589,12 +618,37 @@ func scanChallenge(scanner interface{ Scan(dest ...any) error }, userID string) 
 	item.Note = normalizeOptionalText(note)
 	item.Status = Status(status)
 	item.ExpiresAt = expiresAt
+	item.SubmissionText = normalizeOptionalText(submissionText)
+	item.SubmissionImagePath = normalizeOptionalText(submissionImage)
 	item.CanAccept = item.ReceiverUserID == userID && item.Status == StatusSent
 	item.CanDecline = item.ReceiverUserID == userID && (item.Status == StatusSent || item.Status == StatusAccepted)
 	item.CanComplete = item.ReceiverUserID == userID &&
 		(item.Status == StatusSent || item.Status == StatusAccepted) &&
 		!item.SubmittedByMe
 	return item, nil
+}
+
+func (r *Repository) GetSubmissionMedia(ctx context.Context, userID, spaceID, challengeID string) (challengeSubmissionMedia, error) {
+	if _, err := r.loadSpaceContext(ctx, r.db, userID, spaceID); err != nil {
+		return challengeSubmissionMedia{}, err
+	}
+
+	item, err := r.loadChallengeByID(ctx, r.db, userID, spaceID, challengeID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return challengeSubmissionMedia{}, ErrChallengeNotFound
+		}
+		return challengeSubmissionMedia{}, err
+	}
+
+	if item.SubmissionText == nil && item.SubmissionImagePath == nil {
+		return challengeSubmissionMedia{}, ErrChallengeImageNotFound
+	}
+
+	return challengeSubmissionMedia{
+		TextResponse: item.SubmissionText,
+		ImagePath:    item.SubmissionImagePath,
+	}, nil
 }
 
 func (r *Repository) completeChallengeAndLockReward(ctx context.Context, q dbtx, challengeID string) (int, string, error) {

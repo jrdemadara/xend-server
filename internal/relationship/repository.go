@@ -1,78 +1,24 @@
-package auth
+package relationship
 
 import (
 	"context"
 	"errors"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"xend.chat/m/internal/auth"
 )
 
-type RelationshipInvite struct {
-	InviteID            string
-	RelationshipSpaceID *string
-	InviterUserID       string
-	InviterDisplayName  string
-	InviterIdentifier   string
-	InviterAvatarURL    *string
-	Note                *string
-	Status              string
-	CreatedAt           time.Time
+type Repository struct {
+	db *pgxpool.Pool
 }
 
-type RelationshipSpaceSummary struct {
-	RelationshipSpaceID string
-	ConversationID      string
-	Name                *string
-	CreatedByUserID     string
-	CurrentLevel        int16
-	CurrentLevelName    string
-	IsDefault           bool
-	AccessHint          *string
-	AccessConfigured    bool
-	ArchivedAt          *time.Time
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
+func NewRepository(db *pgxpool.Pool) *Repository {
+	return &Repository{db: db}
 }
 
-type RelationshipInviteOutbox struct {
-	InviteID          string
-	InviteeIdentifier string
-	Status            string
-	Note              *string
-	CreatedAt         time.Time
-}
-
-type RelationshipLevel struct {
-	Level       int16
-	Name        string
-	Description *string
-}
-
-type RelationshipLevelProgress struct {
-	RelationshipSpaceID string
-	Level               int16
-	RequiredPoints      int32
-	CurrentPoints       int32
-	UnlockedAt          *time.Time
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
-}
-
-type RelationshipSpaceMemberSummary struct {
-	UserID      string
-	DisplayName string
-	Identifier  string
-}
-
-var (
-	ErrInviteNotFound                  = errors.New("invite not found")
-	ErrRelationshipSpaceNotFound       = errors.New("relationship space not found")
-	ErrRelationshipSpaceAccessNotFound = errors.New("relationship space access not found")
-)
-
-func (r *Repository) CreateRelationshipInviteByIdentifier(ctx context.Context, inviterUserID, inviteeIdentifier string, note *string) (string, string, string, error) {
+func (r *Repository) CreateInviteByIdentifier(ctx context.Context, inviterUserID, inviteeIdentifier string, note *string) (string, string, string, error) {
 	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return "", "", "", err
@@ -114,9 +60,7 @@ func (r *Repository) CreateRelationshipInviteByIdentifier(ctx context.Context, i
 
 	inviteID := uuid.NewString()
 	if _, err = tx.Exec(ctx, `
-		INSERT INTO relationship_invites (
-			id, inviter_user_id, invitee_user_id, status, note
-		)
+		INSERT INTO relationship_invites (id, inviter_user_id, invitee_user_id, status, note)
 		VALUES ($1, $2, $3, 'pending', $4)
 	`, inviteID, inviterUserID, inviteeUserID, note); err != nil {
 		return "", "", "", err
@@ -128,7 +72,7 @@ func (r *Repository) CreateRelationshipInviteByIdentifier(ctx context.Context, i
 	return inviteID, inviteeUserID, inviteeEmail, nil
 }
 
-func (r *Repository) ListInviteInbox(ctx context.Context, inviteeUserID string) ([]RelationshipInvite, error) {
+func (r *Repository) ListInviteInbox(ctx context.Context, inviteeUserID string) ([]Invite, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT ri.id,
 		       ri.relationship_space_id,
@@ -150,9 +94,9 @@ func (r *Repository) ListInviteInbox(ctx context.Context, inviteeUserID string) 
 	}
 	defer rows.Close()
 
-	var invites []RelationshipInvite
+	items := make([]Invite, 0)
 	for rows.Next() {
-		var item RelationshipInvite
+		var item Invite
 		if err := rows.Scan(
 			&item.InviteID,
 			&item.RelationshipSpaceID,
@@ -166,21 +110,14 @@ func (r *Repository) ListInviteInbox(ctx context.Context, inviteeUserID string) 
 		); err != nil {
 			return nil, err
 		}
-		invites = append(invites, item)
+		items = append(items, item)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return invites, nil
+	return items, rows.Err()
 }
 
-func (r *Repository) ListInviteOutbox(ctx context.Context, inviterUserID string) ([]RelationshipInviteOutbox, error) {
+func (r *Repository) ListInviteOutbox(ctx context.Context, inviterUserID string) ([]InviteOutbox, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT ri.id,
-		       u.identifier,
-		       ri.status,
-		       ri.note,
-		       ri.created_at
+		SELECT ri.id, u.identifier, ri.status, ri.note, ri.created_at
 		FROM relationship_invites ri
 		JOIN users u ON u.id = ri.invitee_user_id
 		WHERE ri.inviter_user_id = $1
@@ -191,27 +128,18 @@ func (r *Repository) ListInviteOutbox(ctx context.Context, inviterUserID string)
 	}
 	defer rows.Close()
 
-	items := make([]RelationshipInviteOutbox, 0)
+	items := make([]InviteOutbox, 0)
 	for rows.Next() {
-		var it RelationshipInviteOutbox
-		if err := rows.Scan(
-			&it.InviteID,
-			&it.InviteeIdentifier,
-			&it.Status,
-			&it.Note,
-			&it.CreatedAt,
-		); err != nil {
+		var item InviteOutbox
+		if err := rows.Scan(&item.InviteID, &item.InviteeIdentifier, &item.Status, &item.Note, &item.CreatedAt); err != nil {
 			return nil, err
 		}
-		items = append(items, it)
+		items = append(items, item)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
+	return items, rows.Err()
 }
 
-func (r *Repository) AcceptRelationshipInvite(ctx context.Context, inviteID, inviteeUserID string) (string, string, string, error) {
+func (r *Repository) AcceptInvite(ctx context.Context, inviteID, inviteeUserID string) (string, string, string, error) {
 	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return "", "", "", err
@@ -248,9 +176,7 @@ func (r *Repository) AcceptRelationshipInvite(ctx context.Context, inviteID, inv
 		}
 
 		if _, err = tx.Exec(ctx, `
-			INSERT INTO relationship_space_members (
-				relationship_space_id, user_id, joined_by_user_id, role, membership_status
-			)
+			INSERT INTO relationship_space_members (relationship_space_id, user_id, joined_by_user_id, role, membership_status)
 			VALUES ($1, $2, $2, 'owner', 'active')
 			ON CONFLICT (relationship_space_id, user_id)
 			DO UPDATE SET membership_status = 'active', left_at = NULL, joined_at = now()
@@ -268,15 +194,10 @@ func (r *Repository) AcceptRelationshipInvite(ctx context.Context, inviteID, inv
 	}
 
 	if _, err = tx.Exec(ctx, `
-		INSERT INTO relationship_space_members (
-			relationship_space_id, user_id, joined_by_user_id, role, membership_status
-		)
+		INSERT INTO relationship_space_members (relationship_space_id, user_id, joined_by_user_id, role, membership_status)
 		VALUES ($1, $2, $3, 'member', 'active')
 		ON CONFLICT (relationship_space_id, user_id)
-		DO UPDATE SET
-			membership_status = 'active',
-			left_at = NULL,
-			joined_at = now()
+		DO UPDATE SET membership_status = 'active', left_at = NULL, joined_at = now()
 	`, spaceID, inviteeUserID, inviterUserID); err != nil {
 		return "", "", "", err
 	}
@@ -291,11 +212,7 @@ func (r *Repository) AcceptRelationshipInvite(ctx context.Context, inviteID, inv
 
 	if _, err = tx.Exec(ctx, `
 		INSERT INTO relationship_space_level_progress (
-			relationship_space_id,
-			level,
-			required_points,
-			current_points,
-			unlocked_at
+			relationship_space_id, level, required_points, current_points, unlocked_at
 		)
 		SELECT $1, rl.level, rl.required_points, 0, now()
 		FROM relationship_levels rl
@@ -331,7 +248,7 @@ func (r *Repository) AcceptRelationshipInvite(ctx context.Context, inviteID, inv
 	return spaceID, conversationID, inviterUserID, nil
 }
 
-func (r *Repository) DeclineRelationshipInvite(ctx context.Context, inviteID, inviteeUserID string) (string, error) {
+func (r *Repository) DeclineInvite(ctx context.Context, inviteID, inviteeUserID string) (string, error) {
 	var inviterUserID string
 	err := r.db.QueryRow(ctx, `
 		UPDATE relationship_invites
@@ -350,7 +267,7 @@ func (r *Repository) DeclineRelationshipInvite(ctx context.Context, inviteID, in
 	return inviterUserID, nil
 }
 
-func (r *Repository) ListRelationshipSpacesByUser(ctx context.Context, userID string) ([]RelationshipSpaceSummary, error) {
+func (r *Repository) ListSpacesByUser(ctx context.Context, userID string) ([]SpaceSummary, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT rs.id,
 		       COALESCE(c.id::text, ''),
@@ -365,17 +282,12 @@ func (r *Repository) ListRelationshipSpacesByUser(ctx context.Context, userID st
 		       rs.created_at,
 		       rs.updated_at
 		FROM relationship_spaces rs
-		JOIN relationship_space_members rsm
-		  ON rsm.relationship_space_id = rs.id
-		LEFT JOIN conversations c
-		  ON c.relationship_space_id = rs.id
-		LEFT JOIN user_space_preferences usp
-		  ON usp.user_id = rsm.user_id
+		JOIN relationship_space_members rsm ON rsm.relationship_space_id = rs.id
+		LEFT JOIN conversations c ON c.relationship_space_id = rs.id
+		LEFT JOIN user_space_preferences usp ON usp.user_id = rsm.user_id
 		LEFT JOIN relationship_space_member_access rsma
-		  ON rsma.relationship_space_id = rs.id
-		 AND rsma.user_id = rsm.user_id
-		LEFT JOIN relationship_levels rl
-		  ON rl.level = rs.current_level
+		  ON rsma.relationship_space_id = rs.id AND rsma.user_id = rsm.user_id
+		LEFT JOIN relationship_levels rl ON rl.level = rs.current_level
 		WHERE rsm.user_id = $1
 		  AND rsm.membership_status = 'active'
 		ORDER BY rs.updated_at DESC
@@ -385,34 +297,31 @@ func (r *Repository) ListRelationshipSpacesByUser(ctx context.Context, userID st
 	}
 	defer rows.Close()
 
-	items := make([]RelationshipSpaceSummary, 0)
+	items := make([]SpaceSummary, 0)
 	for rows.Next() {
-		var it RelationshipSpaceSummary
+		var item SpaceSummary
 		if err := rows.Scan(
-			&it.RelationshipSpaceID,
-			&it.ConversationID,
-			&it.Name,
-			&it.CreatedByUserID,
-			&it.CurrentLevel,
-			&it.CurrentLevelName,
-			&it.IsDefault,
-			&it.AccessHint,
-			&it.AccessConfigured,
-			&it.ArchivedAt,
-			&it.CreatedAt,
-			&it.UpdatedAt,
+			&item.RelationshipSpaceID,
+			&item.ConversationID,
+			&item.Name,
+			&item.CreatedByUserID,
+			&item.CurrentLevel,
+			&item.CurrentLevelName,
+			&item.IsDefault,
+			&item.AccessHint,
+			&item.AccessConfigured,
+			&item.ArchivedAt,
+			&item.CreatedAt,
+			&item.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
-		items = append(items, it)
+		items = append(items, item)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
+	return items, rows.Err()
 }
 
-func (r *Repository) SetDefaultRelationshipSpace(ctx context.Context, userID, spaceID string) error {
+func (r *Repository) SetDefaultSpace(ctx context.Context, userID, spaceID string) error {
 	tag, err := r.db.Exec(ctx, `
 		INSERT INTO user_space_preferences (user_id, default_relationship_space_id)
 		SELECT $1, $2
@@ -430,23 +339,20 @@ func (r *Repository) SetDefaultRelationshipSpace(ctx context.Context, userID, sp
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		return ErrRelationshipSpaceNotFound
+		return ErrSpaceNotFound
 	}
 	return nil
 }
 
-func (r *Repository) UpsertRelationshipSpaceAccess(ctx context.Context, userID, spaceID, passphrase string, hint *string) error {
-	passphraseHash, err := HashPassword(passphrase)
+func (r *Repository) UpsertSpaceAccess(ctx context.Context, userID, spaceID, passphrase string, hint *string) error {
+	passphraseHash, err := auth.HashPassword(passphrase)
 	if err != nil {
 		return err
 	}
 
 	tag, err := r.db.Exec(ctx, `
 		INSERT INTO relationship_space_member_access (
-			relationship_space_id,
-			user_id,
-			access_passphrase_hash,
-			access_hint
+			relationship_space_id, user_id, access_passphrase_hash, access_hint
 		)
 		SELECT $2, $1, $3, $4
 		WHERE EXISTS (
@@ -465,12 +371,12 @@ func (r *Repository) UpsertRelationshipSpaceAccess(ctx context.Context, userID, 
 		return err
 	}
 	if tag.RowsAffected() == 0 {
-		return ErrRelationshipSpaceNotFound
+		return ErrSpaceNotFound
 	}
 	return nil
 }
 
-func (r *Repository) UnlockRelationshipSpace(ctx context.Context, userID, passphrase string) (RelationshipSpaceSummary, error) {
+func (r *Repository) UnlockSpace(ctx context.Context, userID, passphrase string) (SpaceSummary, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT rs.id,
 		       COALESCE(c.id::text, ''),
@@ -486,17 +392,12 @@ func (r *Repository) UnlockRelationshipSpace(ctx context.Context, userID, passph
 		       rs.created_at,
 		       rs.updated_at
 		FROM relationship_spaces rs
-		JOIN relationship_space_members rsm
-		  ON rsm.relationship_space_id = rs.id
+		JOIN relationship_space_members rsm ON rsm.relationship_space_id = rs.id
 		JOIN relationship_space_member_access rsma
-		  ON rsma.relationship_space_id = rs.id
-		 AND rsma.user_id = rsm.user_id
-		LEFT JOIN user_space_preferences usp
-		  ON usp.user_id = rsm.user_id
-		LEFT JOIN conversations c
-		  ON c.relationship_space_id = rs.id
-		LEFT JOIN relationship_levels rl
-		  ON rl.level = rs.current_level
+		  ON rsma.relationship_space_id = rs.id AND rsma.user_id = rsm.user_id
+		LEFT JOIN user_space_preferences usp ON usp.user_id = rsm.user_id
+		LEFT JOIN conversations c ON c.relationship_space_id = rs.id
+		LEFT JOIN relationship_levels rl ON rl.level = rs.current_level
 		WHERE rsm.user_id = $1
 		  AND rsm.membership_status = 'active'
 		  AND COALESCE(usp.default_relationship_space_id = rs.id, false) = false
@@ -504,12 +405,12 @@ func (r *Repository) UnlockRelationshipSpace(ctx context.Context, userID, passph
 		ORDER BY rs.created_at ASC
 	`, userID)
 	if err != nil {
-		return RelationshipSpaceSummary{}, err
+		return SpaceSummary{}, err
 	}
 	defer rows.Close()
 
 	for rows.Next() {
-		var item RelationshipSpaceSummary
+		var item SpaceSummary
 		var passphraseHash string
 		if err := rows.Scan(
 			&item.RelationshipSpaceID,
@@ -526,19 +427,19 @@ func (r *Repository) UnlockRelationshipSpace(ctx context.Context, userID, passph
 			&item.CreatedAt,
 			&item.UpdatedAt,
 		); err != nil {
-			return RelationshipSpaceSummary{}, err
+			return SpaceSummary{}, err
 		}
-		if VerifyPassword(passphraseHash, passphrase) == nil {
+		if auth.VerifyPassword(passphraseHash, passphrase) == nil {
 			return item, nil
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return RelationshipSpaceSummary{}, err
+		return SpaceSummary{}, err
 	}
-	return RelationshipSpaceSummary{}, ErrRelationshipSpaceAccessNotFound
+	return SpaceSummary{}, ErrSpaceAccessNotFound
 }
 
-func (r *Repository) ListRelationshipLevels(ctx context.Context) ([]RelationshipLevel, error) {
+func (r *Repository) ListLevels(ctx context.Context) ([]Level, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT level, name, description
 		FROM relationship_levels
@@ -549,21 +450,18 @@ func (r *Repository) ListRelationshipLevels(ctx context.Context) ([]Relationship
 	}
 	defer rows.Close()
 
-	items := make([]RelationshipLevel, 0)
+	items := make([]Level, 0)
 	for rows.Next() {
-		var it RelationshipLevel
-		if err := rows.Scan(&it.Level, &it.Name, &it.Description); err != nil {
+		var item Level
+		if err := rows.Scan(&item.Level, &item.Name, &item.Description); err != nil {
 			return nil, err
 		}
-		items = append(items, it)
+		items = append(items, item)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
+	return items, rows.Err()
 }
 
-func (r *Repository) ListRelationshipLevelProgressBySpace(ctx context.Context, userID, spaceID string) ([]RelationshipLevelProgress, error) {
+func (r *Repository) ListLevelProgressBySpace(ctx context.Context, userID, spaceID string) ([]LevelProgress, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT rlp.relationship_space_id,
 		       rlp.level,
@@ -573,8 +471,7 @@ func (r *Repository) ListRelationshipLevelProgressBySpace(ctx context.Context, u
 		       rlp.created_at,
 		       rlp.updated_at
 		FROM relationship_space_level_progress rlp
-		JOIN relationship_space_members rsm
-		  ON rsm.relationship_space_id = rlp.relationship_space_id
+		JOIN relationship_space_members rsm ON rsm.relationship_space_id = rlp.relationship_space_id
 		WHERE rlp.relationship_space_id = $1
 		  AND rsm.user_id = $2
 		  AND rsm.membership_status = 'active'
@@ -585,57 +482,78 @@ func (r *Repository) ListRelationshipLevelProgressBySpace(ctx context.Context, u
 	}
 	defer rows.Close()
 
-	items := make([]RelationshipLevelProgress, 0)
+	items := make([]LevelProgress, 0)
 	for rows.Next() {
-		var it RelationshipLevelProgress
+		var item LevelProgress
 		if err := rows.Scan(
-			&it.RelationshipSpaceID,
-			&it.Level,
-			&it.RequiredPoints,
-			&it.CurrentPoints,
-			&it.UnlockedAt,
-			&it.CreatedAt,
-			&it.UpdatedAt,
+			&item.RelationshipSpaceID,
+			&item.Level,
+			&item.RequiredPoints,
+			&item.CurrentPoints,
+			&item.UnlockedAt,
+			&item.CreatedAt,
+			&item.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
-		items = append(items, it)
+		items = append(items, item)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
+	return items, rows.Err()
 }
 
-func (r *Repository) ListRelationshipSpaceMembers(ctx context.Context, userID, spaceID string) ([]RelationshipSpaceMemberSummary, error) {
+func (r *Repository) ListSpaceMembers(ctx context.Context, userID, spaceID string) ([]SpaceMemberSummary, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT u.id, u.display_name, u.identifier
 		FROM relationship_space_members me
-		JOIN relationship_space_members m
-		  ON m.relationship_space_id = me.relationship_space_id
-		 AND m.membership_status = 'active'
-		JOIN users u ON u.id = m.user_id
+		JOIN relationship_space_members member
+		  ON member.relationship_space_id = me.relationship_space_id
+		 AND member.membership_status = 'active'
+		JOIN users u ON u.id = member.user_id
 		WHERE me.relationship_space_id = $1
 		  AND me.user_id = $2
 		  AND me.membership_status = 'active'
 		  AND u.deleted_at IS NULL
-		ORDER BY m.joined_at ASC
+		ORDER BY member.joined_at ASC
 	`, spaceID, userID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	items := make([]RelationshipSpaceMemberSummary, 0)
+	items := make([]SpaceMemberSummary, 0)
 	for rows.Next() {
-		var it RelationshipSpaceMemberSummary
-		if err := rows.Scan(&it.UserID, &it.DisplayName, &it.Identifier); err != nil {
+		var item SpaceMemberSummary
+		if err := rows.Scan(&item.UserID, &item.DisplayName, &item.Identifier); err != nil {
 			return nil, err
 		}
-		items = append(items, it)
+		items = append(items, item)
 	}
-	if err := rows.Err(); err != nil {
+	return items, rows.Err()
+}
+
+func (r *Repository) ListRelatedUserIDs(ctx context.Context, userID string) ([]string, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT DISTINCT other.user_id
+		FROM relationship_space_members me
+		JOIN relationship_space_members other
+		  ON other.relationship_space_id = me.relationship_space_id
+		WHERE me.user_id = $1
+		  AND me.membership_status = 'active'
+		  AND other.membership_status = 'active'
+		  AND other.user_id <> $1
+	`, userID)
+	if err != nil {
 		return nil, err
 	}
-	return items, nil
+	defer rows.Close()
+
+	items := make([]string, 0, 4)
+	for rows.Next() {
+		var relatedUserID string
+		if err := rows.Scan(&relatedUserID); err != nil {
+			return nil, err
+		}
+		items = append(items, relatedUserID)
+	}
+	return items, rows.Err()
 }
