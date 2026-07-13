@@ -28,13 +28,13 @@ jobs:
           mkdir -p dist
 
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-            go build -o dist/xend-api ./xend-server/cmd/api
+            go build -o dist/xend-api ./cmd/api
 
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-            go build -o dist/xend-realtime ./xend-server/cmd/realtime
+            go build -o dist/xend-realtime ./cmd/realtime
 
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-            go build -o dist/xend-worker ./xend-server/cmd/worker
+            go build -o dist/xend-worker ./cmd/worker
 
       - name: Upload release to S3
         run: |
