@@ -1,0 +1,40 @@
+name: Deploy Xend Server
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build Linux binary
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+          go build -o xend-server .
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: arn:aws:iam::876913699296:role/GitHubXendDeployRole
+          aws-region: ap-southeast-2
+
+      - name: Upload release to S3
+        run: |
+          aws s3 cp xend-server \
+            "s3://amzn-s3-xend-bucket/deploy/releases/${GITHUB_REF_NAME}/xend-server"
