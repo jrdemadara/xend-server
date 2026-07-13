@@ -23,18 +23,30 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Build Linux binary
+      - name: Build Linux binaries
         run: |
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-          go build -o xend-server .
+          mkdir -p dist
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v5
-        with:
-          role-to-assume: arn:aws:iam::876913699296:role/GitHubXendDeployRole
-          aws-region: ap-southeast-2
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -o dist/xend-api ./xend-server/cmd/api
+
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -o dist/xend-realtime ./xend-server/cmd/realtime
+
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -o dist/xend-worker ./xend-server/cmd/worker
 
       - name: Upload release to S3
         run: |
           aws s3 cp xend-server \
             "s3://amzn-s3-xend-bucket/deploy/releases/${GITHUB_REF_NAME}/xend-server"
+            - name: Upload release to S3
+              run: |
+                aws s3 cp dist/xend-api \
+                  "s3://amzn-s3-xend-bucket/deploy/releases/${GITHUB_REF_NAME}/xend-api"
+
+                aws s3 cp dist/xend-realtime \
+                  "s3://amzn-s3-xend-bucket/deploy/releases/${GITHUB_REF_NAME}/xend-realtime"
+
+                aws s3 cp dist/xend-worker \
+                  "s3://amzn-s3-xend-bucket/deploy/releases/${GITHUB_REF_NAME}/xend-worker"
