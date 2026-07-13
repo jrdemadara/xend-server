@@ -45,8 +45,8 @@ jobs:
       - name: Upload release to S3
         run: |
           aws s3 cp dist/xend-api \
-            "s3://amzn-s3-xend-bucket/deploy/releases/${GITHUB_REF_NAME}/xend-api"
+            "s3://amzn-s3-xend-bucket-876913699296-ap-southeast-1-an/deploy/releases/${GITHUB_REF_NAME}/xend-api"
           aws s3 cp dist/xend-realtime \
-            "s3://amzn-s3-xend-bucket/deploy/releases/${GITHUB_REF_NAME}/xend-realtime"
+            "s3://amzn-s3-xend-bucket-876913699296-ap-southeast-1-an/deploy/releases/${GITHUB_REF_NAME}/xend-realtime"
           aws s3 cp dist/xend-worker \
-            "s3://amzn-s3-xend-bucket/deploy/releases/${GITHUB_REF_NAME}/xend-worker"
+            "s3://amzn-s3-xend-bucket-876913699296-ap-southeast-1-an/deploy/releases/${GITHUB_REF_NAME}/xend-worker"
