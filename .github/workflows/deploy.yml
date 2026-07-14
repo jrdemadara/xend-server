@@ -45,3 +45,32 @@ jobs:
             "s3://amzn-s3-xend-bucket-876913699296-ap-southeast-1-an/deploy/releases/${GITHUB_REF_NAME}/xend-api"
           aws s3 cp dist/xend-worker \
             "s3://amzn-s3-xend-bucket-876913699296-ap-southeast-1-an/deploy/releases/${GITHUB_REF_NAME}/xend-worker"
+
+      - name: Deploy release to EC2
+        id: deploy
+        run: |
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "i-03458cf7c6fb9e466" \
+            --document-name "AWS-RunShellScript" \
+            --parameters "commands=[\"/opt/xend/scripts/deploy.sh ${GITHUB_REF_NAME}\"]" \
+            --region ap-southeast-1 \
+            --query "Command.CommandId" \
+            --output text)
+          echo "SSM command: ${COMMAND_ID}"
+          echo "command_id=${COMMAND_ID}" >> "$GITHUB_OUTPUT"
+          aws ssm wait command-executed \
+            --command-id "${COMMAND_ID}" \
+            --instance-id "i-03458cf7c6fb9e466" \
+            --region ap-southeast-1
+      - name: Show deployment result
+        if: always() && steps.deploy.outputs.command_id != ''
+        run: |
+          aws ssm get-command-invocation \
+            --command-id "${{ steps.deploy.outputs.command_id }}" \
+            --instance-id "i-03458cf7c6fb9e466" \
+            --region ap-southeast-1 \
+            --query '{
+              Status:Status,
+              Output:StandardOutputContent,
+              Error:StandardErrorContent
+            }'
