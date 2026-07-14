@@ -96,28 +96,28 @@ func (m *SMTPMailer) SendRelationshipInviteEmail(_ context.Context, toEmail, inv
 func renderVerificationHTML(token, verifyURL string) (string, error) {
 	const tpl = `<!doctype html>
 <html>
-  <body style="margin:0;padding:0;background:#f5f2ff;font-family:Arial,sans-serif;color:#1f1633;">
+  <body style="margin:0;padding:0;background:{{.PrimarySoft}};font-family:Arial,sans-serif;color:{{.TextColor}};">
     <table width="100%" height="100%" cellpadding="0" cellspacing="0" style="margin:0;padding:0;">
       <tr>
         <td align="center" valign="top" style="padding:0;">
           <table width="100%" height="100%" cellpadding="0" cellspacing="0" style="background:#ffffff;overflow:hidden;border:0;">
             <tr>
-              <td style="background:linear-gradient(135deg,#6f2cff,#8f4dff);padding:20px 24px;color:#ffffff;font-size:22px;font-weight:700;">
+              <td style="background:{{.Primary}};padding:20px 24px;color:#ffffff;font-size:22px;font-weight:700;">
                 Xend
               </td>
             </tr>
             <tr>
               <td style="padding:24px;">
                 <p style="margin:0 0 12px 0;font-size:18px;font-weight:700;">Verify your email</p>
-                <p style="margin:0 0 16px 0;font-size:14px;line-height:1.6;color:#4a3b6b;">
+                <p style="margin:0 0 16px 0;font-size:14px;line-height:1.6;color:{{.BodyTextColor}};">
                   Welcome to Xend. Use this verification code to finish creating your account.
                 </p>
-                <div style="margin:18px 0;padding:14px 16px;background:#f3edff;border:1px dashed #b99cff;border-radius:10px;font-size:28px;font-weight:800;letter-spacing:4px;text-align:center;color:#5b21b6;">
+                <div style="margin:18px 0;padding:14px 16px;background:{{.PrimarySoft}};border:1px dashed {{.PrimaryBorder}};border-radius:10px;font-size:28px;font-weight:800;letter-spacing:4px;text-align:center;color:{{.PrimaryContainer}};">
                   {{.Code}}
                 </div>
-                <p style="margin:0 0 18px 0;font-size:13px;color:#6b5a92;">Code expires in 24 hours.</p>
-                <a href="{{.URL}}" style="display:inline-block;background:#6f2cff;color:#ffffff;text-decoration:none;padding:12px 18px;border-radius:10px;font-weight:700;font-size:14px;">Verify Email</a>
-                <p style="margin:18px 0 0 0;font-size:12px;line-height:1.6;color:#8a7aa8;">
+                <p style="margin:0 0 18px 0;font-size:13px;color:{{.MutedTextColor}};">Code expires in 24 hours.</p>
+                <a href="{{.URL}}" style="display:inline-block;background:{{.Primary}};color:#ffffff;text-decoration:none;padding:12px 18px;border-radius:10px;font-weight:700;font-size:14px;">Verify Email</a>
+                <p style="margin:18px 0 0 0;font-size:12px;line-height:1.6;color:{{.MutedTextColor}};">
                   If you did not request this, you can ignore this email.
                 </p>
               </td>
@@ -136,11 +136,25 @@ func renderVerificationHTML(token, verifyURL string) (string, error) {
 
 	var b strings.Builder
 	data := struct {
-		Code string
-		URL  string
+		Code             string
+		URL              string
+		Primary          string
+		PrimaryContainer string
+		PrimarySoft      string
+		PrimaryBorder    string
+		TextColor        string
+		BodyTextColor    string
+		MutedTextColor   string
 	}{
-		Code: token,
-		URL:  verifyURL,
+		Code:             token,
+		URL:              verifyURL,
+		Primary:          "#FF335F",
+		PrimaryContainer: "#E3184E",
+		PrimarySoft:      "#FFEEF4",
+		PrimaryBorder:    "#FFB2B8",
+		TextColor:        "#281718",
+		BodyTextColor:    "#5C3F41",
+		MutedTextColor:   "#906F71",
 	}
 	if err := t.Execute(&b, data); err != nil {
 		return "", err
