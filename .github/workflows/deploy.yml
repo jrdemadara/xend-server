@@ -31,9 +31,6 @@ jobs:
             go build -o dist/xend-api ./cmd/api
 
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-            go build -o dist/xend-realtime ./cmd/realtime
-
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
             go build -o dist/xend-worker ./cmd/worker
 
       - name: Configure AWS credentials
@@ -46,7 +43,5 @@ jobs:
         run: |
           aws s3 cp dist/xend-api \
             "s3://amzn-s3-xend-bucket-876913699296-ap-southeast-1-an/deploy/releases/${GITHUB_REF_NAME}/xend-api"
-          aws s3 cp dist/xend-realtime \
-            "s3://amzn-s3-xend-bucket-876913699296-ap-southeast-1-an/deploy/releases/${GITHUB_REF_NAME}/xend-realtime"
           aws s3 cp dist/xend-worker \
             "s3://amzn-s3-xend-bucket-876913699296-ap-southeast-1-an/deploy/releases/${GITHUB_REF_NAME}/xend-worker"
