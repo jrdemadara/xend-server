@@ -33,6 +33,9 @@ jobs:
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
             go build -o dist/xend-worker ./cmd/worker
 
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -o dist/xend-migrate ./cmd/migrate
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
         with:
@@ -45,6 +48,8 @@ jobs:
             "s3://amzn-s3-xend-bucket-876913699296-ap-southeast-1-an/deploy/releases/${GITHUB_REF_NAME}/xend-api"
           aws s3 cp dist/xend-worker \
             "s3://amzn-s3-xend-bucket-876913699296-ap-southeast-1-an/deploy/releases/${GITHUB_REF_NAME}/xend-worker"
+          aws s3 cp dist/xend-migrate \
+            "s3://amzn-s3-xend-bucket-876913699296-ap-southeast-1-an/deploy/releases/${GITHUB_REF_NAME}/xend-migrate"
 
       - name: Deploy release to EC2
         id: deploy

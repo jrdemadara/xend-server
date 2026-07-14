@@ -4,6 +4,7 @@ ENV_FILE ?= .env
 MIGRATIONS_DIR ?= migrations
 GOOSE ?= goose
 GOOSE_DRIVER ?= postgres
+MIGRATE_CMD ?= go run ./cmd/migrate
 ASYNQMON_PORT ?= 8085
 
 .PHONY: run-api run-worker run-asynqmon run-stack migrate-up migrate-down migrate-status migrate-reset migrate-create
@@ -26,19 +27,19 @@ run-stack:
 
 migrate-up:
 	@set -a; source $(ENV_FILE); set +a; \
-	$(GOOSE) -dir $(MIGRATIONS_DIR) $(GOOSE_DRIVER) "$$DATABASE_URL" up
+	$(MIGRATE_CMD) up
 
 migrate-down:
 	@set -a; source $(ENV_FILE); set +a; \
-	$(GOOSE) -dir $(MIGRATIONS_DIR) $(GOOSE_DRIVER) "$$DATABASE_URL" down
+	$(MIGRATE_CMD) down
 
 migrate-status:
 	@set -a; source $(ENV_FILE); set +a; \
-	$(GOOSE) -dir $(MIGRATIONS_DIR) $(GOOSE_DRIVER) "$$DATABASE_URL" status
+	$(MIGRATE_CMD) status
 
 migrate-reset:
 	@set -a; source $(ENV_FILE); set +a; \
-	$(GOOSE) -dir $(MIGRATIONS_DIR) $(GOOSE_DRIVER) "$$DATABASE_URL" reset
+	$(MIGRATE_CMD) reset
 
 migrate-create:
 	@echo "Usage: make -f build/Makefile migrate-create NAME=create_example_table"
