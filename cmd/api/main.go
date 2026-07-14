@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -21,6 +23,7 @@ import (
 	"xend.chat/m/internal/logging"
 	"xend.chat/m/internal/message"
 	"xend.chat/m/internal/notify"
+	"xend.chat/m/internal/objectstore"
 	"xend.chat/m/internal/presence"
 	"xend.chat/m/internal/queue"
 	"xend.chat/m/internal/realtime"
@@ -91,11 +94,17 @@ func main() {
 	relationshipHandler := relationship.NewHandler(relationshipRepo, userRepo, deviceRepo, emailEnqueuer, hub, pushNotifier)
 	dailyCheckInRepo := dailycheckin.NewRepository(pool)
 	dailyCheckInHandler := dailycheckin.NewHandler(dailyCheckInRepo, hub)
+	mediaStore, err := newMediaStore(ctx, cfg)
+	if err != nil {
+		logger.Error("media storage setup failed", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("media storage configured", "driver", cfg.MediaStorageDriver)
 	dailyRitualRepo := dailyritual.NewRepository(pool)
-	dailyRitualStore := dailyritual.NewSubmissionStore("storage/daily-rituals")
+	dailyRitualStore := dailyritual.NewSubmissionStore(mediaStore)
 	dailyRitualHandler := dailyritual.NewHandler(dailyRitualRepo, dailyRitualStore)
 	challengeRepo := challenges.NewRepository(pool)
-	challengeStore := challenges.NewSubmissionStore("storage/challenges")
+	challengeStore := challenges.NewSubmissionStore(mediaStore)
 	challengeHandler := challenges.NewHandler(challengeRepo, challengeStore, hub)
 	messageHandler := message.NewHandler(messageRepo, userRepo, deviceRepo, hub, pushNotifier)
 	router := api.NewRouter(h, protectedAuthHandler, userHandler, deviceHandler, relationshipHandler, dailyCheckInHandler, dailyRitualHandler, challengeHandler, messageHandler, presenceHandler, realtimeHandler, tm, redisClient)
@@ -117,4 +126,15 @@ func main() {
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
 	logger.Info("api server stopped")
+}
+
+func newMediaStore(ctx context.Context, cfg config.Config) (objectstore.Store, error) {
+	switch strings.ToLower(strings.TrimSpace(cfg.MediaStorageDriver)) {
+	case "", "local":
+		return objectstore.NewLocalStore(cfg.MediaStorageLocalRoot), nil
+	case "s3":
+		return objectstore.NewS3Store(ctx, cfg.MediaS3Bucket, cfg.MediaS3Region, cfg.MediaS3Prefix)
+	default:
+		return nil, fmt.Errorf("unsupported MEDIA_STORAGE_DRIVER %q", cfg.MediaStorageDriver)
+	}
 }

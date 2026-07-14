@@ -1,17 +1,18 @@
 package challenges
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
-	"os"
-	"path/filepath"
+	"path"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"xend.chat/m/internal/objectstore"
 )
 
 const maxImageBytes = 8 << 20
@@ -19,18 +20,14 @@ const maxImageBytes = 8 << 20
 var errUnsupportedImageType = errors.New("unsupported image type")
 
 type SubmissionStore struct {
-	rootDir string
+	store objectstore.Store
 }
 
-func NewSubmissionStore(rootDir string) *SubmissionStore {
-	return &SubmissionStore{rootDir: rootDir}
+func NewSubmissionStore(store objectstore.Store) *SubmissionStore {
+	return &SubmissionStore{store: store}
 }
 
-func (s *SubmissionStore) SaveImage(file multipart.File) (string, error) {
-	if err := os.MkdirAll(s.rootDir, 0o755); err != nil {
-		return "", err
-	}
-
+func (s *SubmissionStore) SaveImage(ctx context.Context, file multipart.File) (string, error) {
 	limitedReader := io.LimitReader(file, maxImageBytes+1)
 	data, err := io.ReadAll(limitedReader)
 	if err != nil {
@@ -50,42 +47,32 @@ func (s *SubmissionStore) SaveImage(file multipart.File) (string, error) {
 	}
 
 	fileName := fmt.Sprintf("%s-%s%s", time.Now().Format("20060102-150405"), uuid.NewString(), extension)
-	relativePath := filepath.ToSlash(filepath.Join("challenges", fileName))
-	absolutePath := filepath.Join(s.rootDir, fileName)
-	if err := os.WriteFile(absolutePath, data, 0o644); err != nil {
+	relativePath := path.Join("challenges", fileName)
+	if err := s.store.Put(ctx, relativePath, data, detectedType); err != nil {
 		return "", err
 	}
 	return relativePath, nil
 }
 
-func (s *SubmissionStore) Delete(relativePath string) error {
+func (s *SubmissionStore) Delete(ctx context.Context, relativePath string) error {
 	if strings.TrimSpace(relativePath) == "" {
 		return nil
 	}
-	fileName := filepath.Base(relativePath)
-	if fileName == "." || fileName == string(filepath.Separator) || fileName == "" {
-		return nil
-	}
-	err := os.Remove(filepath.Join(s.rootDir, fileName))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	return err
+	return s.store.Delete(ctx, relativePath)
 }
 
-func (s *SubmissionStore) ReadImage(relativePath string) ([]byte, string, error) {
+func (s *SubmissionStore) ReadImage(ctx context.Context, relativePath string) ([]byte, string, error) {
 	if strings.TrimSpace(relativePath) == "" {
 		return nil, "", ErrImageRequired
 	}
-	fileName := filepath.Base(relativePath)
-	if fileName == "." || fileName == string(filepath.Separator) || fileName == "" {
-		return nil, "", os.ErrNotExist
-	}
-	data, err := os.ReadFile(filepath.Join(s.rootDir, fileName))
+	data, contentType, err := s.store.Get(ctx, relativePath)
 	if err != nil {
 		return nil, "", err
 	}
-	return data, http.DetectContentType(data), nil
+	if strings.TrimSpace(contentType) == "" {
+		contentType = http.DetectContentType(data)
+	}
+	return data, contentType, nil
 }
 
 func imageExtensionForType(contentType string) (string, bool) {

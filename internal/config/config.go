@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -28,6 +29,11 @@ type Config struct {
 	IdentifierRotationEvery time.Duration
 	IdentifierRotationTick  time.Duration
 	FirebaseCredentialsFile string
+	MediaStorageDriver      string
+	MediaStorageLocalRoot   string
+	MediaS3Bucket           string
+	MediaS3Region           string
+	MediaS3Prefix           string
 }
 
 func Load() (Config, error) {
@@ -52,6 +58,11 @@ func Load() (Config, error) {
 		IdentifierRotationEvery: mustDuration("IDENTIFIER_ROTATION_EVERY", 0),
 		IdentifierRotationTick:  mustDuration("IDENTIFIER_ROTATION_TICK", 2*time.Minute),
 		FirebaseCredentialsFile: os.Getenv("FIREBASE_CREDENTIALS_FILE"),
+		MediaStorageDriver:      getEnv("MEDIA_STORAGE_DRIVER", "local"),
+		MediaStorageLocalRoot:   getEnv("MEDIA_STORAGE_LOCAL_ROOT", "storage"),
+		MediaS3Bucket:           os.Getenv("MEDIA_S3_BUCKET"),
+		MediaS3Region:           getEnv("MEDIA_S3_REGION", os.Getenv("AWS_REGION")),
+		MediaS3Prefix:           os.Getenv("MEDIA_S3_PREFIX"),
 	}
 
 	if cfg.DatabaseURL == "" {
@@ -59,6 +70,10 @@ func Load() (Config, error) {
 	}
 	if cfg.JWTAccessSecret == "" || cfg.JWTRefreshSecret == "" {
 		return Config{}, fmt.Errorf("JWT_ACCESS_SECRET and JWT_REFRESH_SECRET are required")
+	}
+	cfg.MediaStorageDriver = strings.ToLower(strings.TrimSpace(cfg.MediaStorageDriver))
+	if cfg.MediaStorageDriver == "s3" && strings.TrimSpace(cfg.MediaS3Bucket) == "" {
+		return Config{}, fmt.Errorf("MEDIA_S3_BUCKET is required when MEDIA_STORAGE_DRIVER=s3")
 	}
 
 	return cfg, nil

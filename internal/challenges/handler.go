@@ -219,7 +219,7 @@ func (h *Handler) Complete(w http.ResponseWriter, r *http.Request) {
 	overview, senderUserID, err := h.repo.CompleteChallenge(r.Context(), claims.UserID, spaceID, challengeID, submission)
 	if err != nil {
 		if storedPath != "" && h.submissionStore != nil {
-			_ = h.submissionStore.Delete(storedPath)
+			_ = h.submissionStore.Delete(r.Context(), storedPath)
 		}
 		h.writeError(w, err)
 		return
@@ -263,7 +263,7 @@ func (h *Handler) GetSubmissionImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, contentType, err := h.submissionStore.ReadImage(*media.ImagePath)
+	data, contentType, err := h.submissionStore.ReadImage(r.Context(), *media.ImagePath)
 	if err != nil {
 		if errors.Is(err, http.ErrMissingFile) || errors.Is(err, ErrImageRequired) || errors.Is(err, os.ErrNotExist) {
 			h.writeError(w, ErrChallengeImageNotFound)
@@ -342,7 +342,7 @@ func (h *Handler) parseMultipartCompletionRequest(r *http.Request) (Submission, 
 		if h.submissionStore == nil {
 			return Submission{}, "", errors.New("image uploads are unavailable")
 		}
-		path, saveErr := h.submissionStore.SaveImage(file)
+		path, saveErr := h.submissionStore.SaveImage(r.Context(), file)
 		if saveErr != nil {
 			return Submission{}, "", saveErr
 		}

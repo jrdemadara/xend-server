@@ -44,10 +44,10 @@ type templateResponse struct {
 }
 
 type overviewResponse struct {
-	RelationshipSpaceID string                     `json:"relationship_space_id"`
-	RitualDate          string                     `json:"ritual_date"`
-	TodayRitual         *assignedResponse          `json:"today_ritual,omitempty"`
-	History             []assignedResponse         `json:"history"`
+	RelationshipSpaceID string             `json:"relationship_space_id"`
+	RitualDate          string             `json:"ritual_date"`
+	TodayRitual         *assignedResponse  `json:"today_ritual,omitempty"`
+	History             []assignedResponse `json:"history"`
 }
 
 type assignedResponse struct {
@@ -161,7 +161,7 @@ func (h *Handler) Submit(w http.ResponseWriter, r *http.Request) {
 	overview, err := h.repo.Submit(r.Context(), claims.UserID, spaceID, assignmentID, submission)
 	if err != nil {
 		if storedPath != "" && h.submissionStore != nil {
-			_ = h.submissionStore.Delete(storedPath)
+			_ = h.submissionStore.Delete(r.Context(), storedPath)
 		}
 		h.writeError(w, err)
 		return
@@ -206,7 +206,7 @@ func (h *Handler) parseMultipartSubmissionRequest(r *http.Request) (Submission, 
 		if h.submissionStore == nil {
 			return Submission{}, "", errors.New("image uploads are unavailable")
 		}
-		path, saveErr := h.submissionStore.SaveImage(file)
+		path, saveErr := h.submissionStore.SaveImage(r.Context(), file)
 		if saveErr != nil {
 			return Submission{}, "", saveErr
 		}
