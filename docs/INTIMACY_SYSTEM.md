@@ -25,7 +25,7 @@ The intimacy feature is designed as a private, progression-based relationship sp
 - Support long-distance relationship bonding.
 - Encourage healthy interaction via shared goals.
 - Unlock deeper experiences over time based on mutual participation.
-- Keep everything privacy-first and member-only.
+- Keep everything privacy-first and member-only..
 
 ## Core Concepts
 
