@@ -79,6 +79,8 @@ func NewRouter(authHandler *auth.Handler, protectedAuthHandler *ProtectedAuthHan
 				sr.Post("/{space_id}/daily-checkin", dailyCheckInHandler.Submit)
 				sr.Get("/{space_id}/daily-rituals", dailyRitualHandler.GetOverview)
 				sr.Post("/{space_id}/daily-rituals/{assignment_id}/submit", dailyRitualHandler.Submit)
+				sr.Get("/{space_id}/moods", relationshipHandler.ListCurrentMoods)
+				sr.Post("/{space_id}/moods", relationshipHandler.SetMood)
 				sr.Get("/{space_id}/challenges/templates", challengeHandler.ListTemplates)
 				sr.Get("/{space_id}/challenges", challengeHandler.GetOverview)
 				sr.Post("/{space_id}/challenges", challengeHandler.Create)

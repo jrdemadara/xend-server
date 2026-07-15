@@ -81,6 +81,23 @@ type memberResponse struct {
 	Identifier  string `json:"identifier"`
 }
 
+type moodRequest struct {
+	MoodKey string `json:"mood_key"`
+	Emoji   string `json:"emoji"`
+	Label   string `json:"label"`
+}
+
+type moodResponse struct {
+	RelationshipSpaceID string `json:"relationship_space_id"`
+	UserID              string `json:"user_id"`
+	DisplayName         string `json:"display_name"`
+	MoodKey             string `json:"mood_key,omitempty"`
+	Emoji               string `json:"emoji,omitempty"`
+	Label               string `json:"label,omitempty"`
+	UpdatedAt           *int64 `json:"updated_at,omitempty"`
+	IsMe                bool   `json:"is_me"`
+}
+
 type configureSpaceAccessRequest struct {
 	Passphrase string  `json:"passphrase"`
 	Hint       *string `json:"hint"`
@@ -456,6 +473,88 @@ func (h *Handler) ListMembers(w http.ResponseWriter, r *http.Request) {
 	httputil.JSON(w, http.StatusOK, map[string]any{"items": response})
 }
 
+func (h *Handler) ListCurrentMoods(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.AccessClaimsFromContext(r.Context())
+	if !ok {
+		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
+		return
+	}
+
+	spaceID := strings.TrimSpace(r.PathValue("space_id"))
+	if spaceID == "" {
+		httputil.Error(w, http.StatusBadRequest, "invalid_request", "space_id is required")
+		return
+	}
+
+	items, err := h.repo.ListCurrentSpaceMoods(r.Context(), claims.UserID, spaceID)
+	if err != nil {
+		httputil.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
+		return
+	}
+	if len(items) == 0 {
+		httputil.Error(w, http.StatusNotFound, "not_found", "relationship space not found")
+		return
+	}
+
+	httputil.JSON(w, http.StatusOK, map[string]any{"items": toMoodResponses(items)})
+}
+
+func (h *Handler) SetMood(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.AccessClaimsFromContext(r.Context())
+	if !ok {
+		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
+		return
+	}
+
+	spaceID := strings.TrimSpace(r.PathValue("space_id"))
+	if spaceID == "" {
+		httputil.Error(w, http.StatusBadRequest, "invalid_request", "space_id is required")
+		return
+	}
+
+	var req moodRequest
+	if err := httputil.DecodeJSON(r, &req); err != nil {
+		httputil.Error(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		return
+	}
+	req.MoodKey = strings.TrimSpace(req.MoodKey)
+	req.Emoji = strings.TrimSpace(req.Emoji)
+	req.Label = strings.TrimSpace(req.Label)
+	if req.MoodKey == "" || req.Emoji == "" || req.Label == "" {
+		httputil.Error(w, http.StatusBadRequest, "invalid_request", "mood_key, emoji, and label are required")
+		return
+	}
+	if len([]rune(req.MoodKey)) > 64 || len([]rune(req.Emoji)) > 16 || len([]rune(req.Label)) > 64 {
+		httputil.Error(w, http.StatusBadRequest, "invalid_request", "mood values are too long")
+		return
+	}
+
+	items, memberIDs, err := h.repo.CreateSpaceMood(r.Context(), claims.UserID, spaceID, req.MoodKey, req.Emoji, req.Label)
+	if err != nil {
+		if errors.Is(err, ErrSpaceNotFound) {
+			httputil.Error(w, http.StatusNotFound, "not_found", "relationship space not found")
+			return
+		}
+		httputil.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
+		return
+	}
+
+	if h.hub != nil {
+		event := wsutil.NewEvent("relationship_mood_updated", map[string]string{
+			"relationship_space_id": spaceID,
+			"user_id":               claims.UserID,
+			"mood_key":              req.MoodKey,
+			"emoji":                 req.Emoji,
+			"label":                 req.Label,
+		})
+		for _, memberID := range memberIDs {
+			h.hub.SendToUser(memberID, event)
+		}
+	}
+
+	httputil.JSON(w, http.StatusOK, map[string]any{"items": toMoodResponses(items)})
+}
+
 func (h *Handler) SetDefaultSpace(w http.ResponseWriter, r *http.Request) {
 	claims, ok := auth.AccessClaimsFromContext(r.Context())
 	if !ok {
@@ -561,6 +660,30 @@ func toSpaceResponse(item SpaceSummary) spaceResponse {
 		CreatedAt:           item.CreatedAt.Unix(),
 		UpdatedAt:           item.UpdatedAt.Unix(),
 	}
+}
+
+func toMoodResponses(items []SpaceMood) []moodResponse {
+	response := make([]moodResponse, 0, len(items))
+	for _, item := range items {
+		resp := moodResponse{
+			RelationshipSpaceID: item.RelationshipSpaceID,
+			UserID:              item.UserID,
+			DisplayName:         item.DisplayName,
+			UpdatedAt:           timeToUnixPtr(item.UpdatedAt),
+			IsMe:                item.IsMe,
+		}
+		if item.MoodKey != nil {
+			resp.MoodKey = *item.MoodKey
+		}
+		if item.Emoji != nil {
+			resp.Emoji = *item.Emoji
+		}
+		if item.Label != nil {
+			resp.Label = *item.Label
+		}
+		response = append(response, resp)
+	}
+	return response
 }
 
 func timeToUnixPtr(value *time.Time) *int64 {

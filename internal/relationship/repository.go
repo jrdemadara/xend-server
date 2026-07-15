@@ -531,6 +531,133 @@ func (r *Repository) ListSpaceMembers(ctx context.Context, userID, spaceID strin
 	return items, rows.Err()
 }
 
+func (r *Repository) ListCurrentSpaceMoods(ctx context.Context, userID, spaceID string) ([]SpaceMood, error) {
+	rows, err := r.db.Query(ctx, `
+		WITH active_members AS (
+			SELECT member.relationship_space_id,
+			       member.user_id,
+			       u.display_name
+			FROM relationship_space_members me
+			JOIN relationship_space_members member
+			  ON member.relationship_space_id = me.relationship_space_id
+			 AND member.membership_status = 'active'
+			JOIN users u ON u.id = member.user_id
+			WHERE me.relationship_space_id = $1
+			  AND me.user_id = $2
+			  AND me.membership_status = 'active'
+			  AND u.deleted_at IS NULL
+		),
+		latest_moods AS (
+			SELECT DISTINCT ON (relationship_space_id, user_id)
+			       relationship_space_id,
+			       user_id,
+			       mood_key,
+			       emoji,
+			       label,
+			       created_at
+			FROM relationship_moods
+			WHERE relationship_space_id = $1
+			ORDER BY relationship_space_id, user_id, created_at DESC
+		)
+		SELECT am.relationship_space_id,
+		       am.user_id,
+		       am.display_name,
+		       lm.mood_key,
+		       lm.emoji,
+		       lm.label,
+		       lm.created_at,
+		       am.user_id = $2 AS is_me
+		FROM active_members am
+		LEFT JOIN latest_moods lm
+		  ON lm.relationship_space_id = am.relationship_space_id
+		 AND lm.user_id = am.user_id
+		ORDER BY is_me DESC, am.display_name ASC
+	`, spaceID, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := make([]SpaceMood, 0)
+	for rows.Next() {
+		var item SpaceMood
+		if err := rows.Scan(
+			&item.RelationshipSpaceID,
+			&item.UserID,
+			&item.DisplayName,
+			&item.MoodKey,
+			&item.Emoji,
+			&item.Label,
+			&item.UpdatedAt,
+			&item.IsMe,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *Repository) CreateSpaceMood(ctx context.Context, userID, spaceID, moodKey, emoji, label string) ([]SpaceMood, []string, error) {
+	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO relationship_moods (relationship_space_id, user_id, mood_key, emoji, label)
+		SELECT $2, $1, $3, $4, $5
+		WHERE EXISTS (
+			SELECT 1
+			FROM relationship_space_members
+			WHERE relationship_space_id = $2
+			  AND user_id = $1
+			  AND membership_status = 'active'
+		)
+	`, userID, spaceID, moodKey, emoji, label)
+	if err != nil {
+		return nil, nil, err
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, nil, ErrSpaceNotFound
+	}
+
+	rows, err := tx.Query(ctx, `
+		SELECT user_id
+		FROM relationship_space_members
+		WHERE relationship_space_id = $1
+		  AND membership_status = 'active'
+	`, spaceID)
+	if err != nil {
+		return nil, nil, err
+	}
+	memberIDs := make([]string, 0, 2)
+	for rows.Next() {
+		var memberID string
+		if err := rows.Scan(&memberID); err != nil {
+			rows.Close()
+			return nil, nil, err
+		}
+		memberIDs = append(memberIDs, memberID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, nil, err
+	}
+	rows.Close()
+
+	if err = tx.Commit(ctx); err != nil {
+		return nil, nil, err
+	}
+
+	moods, err := r.ListCurrentSpaceMoods(ctx, userID, spaceID)
+	if err != nil {
+		return nil, nil, err
+	}
+	return moods, memberIDs, nil
+}
+
 func (r *Repository) ListRelatedUserIDs(ctx context.Context, userID string) ([]string, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT DISTINCT other.user_id

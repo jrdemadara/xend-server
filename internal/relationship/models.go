@@ -62,6 +62,17 @@ type SpaceMemberSummary struct {
 	Identifier  string
 }
 
+type SpaceMood struct {
+	RelationshipSpaceID string
+	UserID              string
+	DisplayName         string
+	MoodKey             *string
+	Emoji               *string
+	Label               *string
+	UpdatedAt           *time.Time
+	IsMe                bool
+}
+
 var (
 	ErrInvalidInput        = errors.New("invalid input")
 	ErrInviteNotFound      = errors.New("invite not found")
