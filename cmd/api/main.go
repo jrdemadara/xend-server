@@ -107,7 +107,7 @@ func main() {
 	challengeStore := challenges.NewSubmissionStore(mediaStore)
 	challengeHandler := challenges.NewHandler(challengeRepo, challengeStore, hub)
 	messageHandler := message.NewHandler(messageRepo, userRepo, deviceRepo, hub, pushNotifier)
-	router := api.NewRouter(h, protectedAuthHandler, userHandler, deviceHandler, relationshipHandler, dailyCheckInHandler, dailyRitualHandler, challengeHandler, messageHandler, presenceHandler, realtimeHandler, tm, redisClient)
+	router := api.NewRouter(h, protectedAuthHandler, userHandler, deviceHandler, relationshipHandler, dailyCheckInHandler, dailyRitualHandler, challengeHandler, messageHandler, presenceHandler, realtimeHandler, tm, pool, redisClient)
 
 	srv := &http.Server{Addr: cfg.HTTPAddr, Handler: router, ReadHeaderTimeout: 5 * time.Second}
 	go func() {

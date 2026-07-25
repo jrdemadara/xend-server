@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	goredis "github.com/redis/go-redis/v9"
 	"xend.chat/m/internal/auth"
 	"xend.chat/m/internal/challenges"
@@ -19,12 +20,32 @@ import (
 	servicerealtime "xend.chat/m/services/realtime"
 )
 
-func NewRouter(authHandler *auth.Handler, protectedAuthHandler *ProtectedAuthHandler, userHandler *user.Handler, deviceHandler *device.Handler, relationshipHandler *relationship.Handler, dailyCheckInHandler *dailycheckin.Handler, dailyRitualHandler *dailyritual.Handler, challengeHandler *challenges.Handler, messageHandler *message.Handler, presenceHandler *presence.Handler, realtimeHandler *servicerealtime.Handler, tokens *auth.TokenManager, redisClient *goredis.Client) http.Handler {
+func NewRouter(authHandler *auth.Handler, protectedAuthHandler *ProtectedAuthHandler, userHandler *user.Handler, deviceHandler *device.Handler, relationshipHandler *relationship.Handler, dailyCheckInHandler *dailycheckin.Handler, dailyRitualHandler *dailyritual.Handler, challengeHandler *challenges.Handler, messageHandler *message.Handler, presenceHandler *presence.Handler, realtimeHandler *servicerealtime.Handler, tokens *auth.TokenManager, db *pgxpool.Pool, redisClient *goredis.Client) http.Handler {
 	r := chi.NewRouter()
 	rl := newAuthRateLimiter(redisClient, 30, time.Minute)
 
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		httputil.JSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	})
+	r.Get("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		checks := map[string]string{
+			"database": "ok",
+			"redis":    "ok",
+		}
+		if err := db.Ping(ctx); err != nil {
+			checks["database"] = "unavailable"
+		}
+		if err := redisClient.Ping(ctx).Err(); err != nil {
+			checks["redis"] = "unavailable"
+		}
+		if checks["database"] != "ok" || checks["redis"] != "ok" {
+			checks["status"] = "not_ready"
+			httputil.JSON(w, http.StatusServiceUnavailable, checks)
+			return
+		}
+		checks["status"] = "ready"
+		httputil.JSON(w, http.StatusOK, checks)
 	})
 	r.Get("/v1/ws", realtimeHandler.ServeWS)
 
