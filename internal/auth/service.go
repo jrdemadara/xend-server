@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -153,9 +154,8 @@ func (s *Service) Login(ctx context.Context, req LoginRequest, clientIP string) 
 	if s.loginAttempts != nil {
 		locked, lockErr := s.loginAttempts.IsLocked(ctx, req.Email, clientIP)
 		if lockErr != nil {
-			return AuthResponse{}, lockErr
-		}
-		if locked {
+			slog.Warn("login rate-limit check failed", "email", req.Email, "client_ip", clientIP, "error", lockErr)
+		} else if locked {
 			return AuthResponse{}, ErrLoginRateLimited
 		}
 	}
@@ -168,7 +168,7 @@ func (s *Service) Login(ctx context.Context, req LoginRequest, clientIP string) 
 			}
 			return AuthResponse{}, ErrInvalidCredentials
 		}
-		return AuthResponse{}, err
+		return AuthResponse{}, fmt.Errorf("login user lookup: %w", err)
 	}
 	if u.EmailVerifiedAt == nil {
 		return AuthResponse{}, ErrEmailNotVerified
@@ -185,12 +185,16 @@ func (s *Service) Login(ctx context.Context, req LoginRequest, clientIP string) 
 		if errors.Is(err, pgx.ErrNoRows) {
 			return AuthResponse{}, ErrDeviceNotFound
 		}
-		return AuthResponse{}, err
+		return AuthResponse{}, fmt.Errorf("login device lookup: %w", err)
 	}
 	if s.loginAttempts != nil {
 		_ = s.loginAttempts.Clear(ctx, req.Email, clientIP)
 	}
-	return s.issueSession(ctx, u.ID, d)
+	resp, err := s.issueSession(ctx, u.ID, d)
+	if err != nil {
+		return AuthResponse{}, fmt.Errorf("login issue session: %w", err)
+	}
+	return resp, nil
 }
 
 func (s *Service) GoogleSignIn(ctx context.Context, req GoogleAuthRequest) (AuthResponse, error) {
