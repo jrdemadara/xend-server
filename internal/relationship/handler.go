@@ -4,7 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"mime/multipart"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -26,9 +28,10 @@ type Handler struct {
 	emailEnqueuer *queue.VerificationEmailEnqueuer
 	hub           *realtime.Hub
 	pushNotifier  notify.PushNotifier
+	mediaStore    *MediaStore
 }
 
-func NewHandler(repo *Repository, users *user.Repository, devices *device.Repository, emailEnqueuer *queue.VerificationEmailEnqueuer, hub *realtime.Hub, pushNotifier notify.PushNotifier) *Handler {
+func NewHandler(repo *Repository, users *user.Repository, devices *device.Repository, emailEnqueuer *queue.VerificationEmailEnqueuer, hub *realtime.Hub, pushNotifier notify.PushNotifier, mediaStore *MediaStore) *Handler {
 	return &Handler{
 		repo:          repo,
 		users:         users,
@@ -36,6 +39,7 @@ func NewHandler(repo *Repository, users *user.Repository, devices *device.Reposi
 		emailEnqueuer: emailEnqueuer,
 		hub:           hub,
 		pushNotifier:  pushNotifier,
+		mediaStore:    mediaStore,
 	}
 }
 
@@ -48,6 +52,8 @@ type spaceResponse struct {
 	RelationshipSpaceID string  `json:"relationship_space_id"`
 	ConversationID      string  `json:"conversation_id"`
 	Name                *string `json:"name,omitempty"`
+	CoverPhotoURL       *string `json:"cover_photo_url,omitempty"`
+	CouplePhotoURL      *string `json:"couple_photo_url,omitempty"`
 	CreatedByUserID     string  `json:"created_by_user_id"`
 	CurrentLevel        int16   `json:"current_level"`
 	CurrentLevelName    string  `json:"current_level_name"`
@@ -85,6 +91,10 @@ type moodRequest struct {
 	MoodKey string `json:"mood_key"`
 	Emoji   string `json:"emoji"`
 	Label   string `json:"label"`
+}
+
+type updateSpaceSettingsRequest struct {
+	Name *string `json:"name"`
 }
 
 type moodResponse struct {
@@ -473,6 +483,98 @@ func (h *Handler) ListMembers(w http.ResponseWriter, r *http.Request) {
 	httputil.JSON(w, http.StatusOK, map[string]any{"items": response})
 }
 
+func (h *Handler) UpdateSpaceSettings(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.AccessClaimsFromContext(r.Context())
+	if !ok {
+		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
+		return
+	}
+
+	spaceID := strings.TrimSpace(r.PathValue("space_id"))
+	if spaceID == "" {
+		httputil.Error(w, http.StatusBadRequest, "invalid_request", "space_id is required")
+		return
+	}
+
+	var req updateSpaceSettingsRequest
+	if err := httputil.DecodeJSON(r, &req); err != nil {
+		httputil.Error(w, http.StatusBadRequest, "invalid_request", "invalid JSON body")
+		return
+	}
+
+	var name *string
+	if req.Name != nil {
+		cleaned := strings.TrimSpace(*req.Name)
+		if len([]rune(cleaned)) > 120 {
+			httputil.Error(w, http.StatusBadRequest, "invalid_request", "name must be 120 characters or fewer")
+			return
+		}
+		if cleaned != "" {
+			name = &cleaned
+		}
+	}
+
+	item, memberIDs, err := h.repo.UpdateSpaceSettings(r.Context(), claims.UserID, spaceID, name)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	h.sendSpaceUpdatedEvent(memberIDs, item)
+	httputil.JSON(w, http.StatusOK, toSpaceResponse(item))
+}
+
+func (h *Handler) UploadCoverPhoto(w http.ResponseWriter, r *http.Request) {
+	h.uploadSpaceImage(w, r, "cover-photo")
+}
+
+func (h *Handler) UploadCouplePhoto(w http.ResponseWriter, r *http.Request) {
+	h.uploadSpaceImage(w, r, "couple-photo")
+}
+
+func (h *Handler) GetSpaceMedia(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.AccessClaimsFromContext(r.Context())
+	if !ok {
+		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
+		return
+	}
+
+	spaceID := strings.TrimSpace(r.PathValue("space_id"))
+	if spaceID == "" {
+		httputil.Error(w, http.StatusBadRequest, "invalid_request", "space_id is required")
+		return
+	}
+	kind := strings.TrimSpace(r.PathValue("kind"))
+	if kind != "cover-photo" && kind != "couple-photo" {
+		httputil.Error(w, http.StatusBadRequest, "invalid_request", "unsupported media kind")
+		return
+	}
+	if h.mediaStore == nil {
+		httputil.Error(w, http.StatusServiceUnavailable, "image_unavailable", "relationship space images are unavailable")
+		return
+	}
+
+	imagePath, err := h.repo.GetSpaceMediaPath(r.Context(), claims.UserID, spaceID, kind)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+
+	data, contentType, err := h.mediaStore.ReadImage(r.Context(), imagePath)
+	if err != nil {
+		if errors.Is(err, http.ErrMissingFile) || errors.Is(err, ErrImageRequired) || errors.Is(err, os.ErrNotExist) {
+			h.writeError(w, ErrSpaceImageNotFound)
+			return
+		}
+		httputil.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
+		return
+	}
+
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
 func (h *Handler) ListCurrentMoods(w http.ResponseWriter, r *http.Request) {
 	claims, ok := auth.AccessClaimsFromContext(r.Context())
 	if !ok {
@@ -645,11 +747,127 @@ func (h *Handler) UnlockSpace(w http.ResponseWriter, r *http.Request) {
 	httputil.JSON(w, http.StatusOK, toSpaceResponse(item))
 }
 
+func (h *Handler) uploadSpaceImage(w http.ResponseWriter, r *http.Request, kind string) {
+	claims, ok := auth.AccessClaimsFromContext(r.Context())
+	if !ok {
+		httputil.Error(w, http.StatusUnauthorized, "invalid_token", "access token is invalid")
+		return
+	}
+
+	spaceID := strings.TrimSpace(r.PathValue("space_id"))
+	if spaceID == "" {
+		httputil.Error(w, http.StatusBadRequest, "invalid_request", "space_id is required")
+		return
+	}
+	if h.mediaStore == nil {
+		httputil.Error(w, http.StatusServiceUnavailable, "image_unavailable", "relationship space image uploads are unavailable")
+		return
+	}
+	if err := r.ParseMultipartForm(9 << 20); err != nil {
+		httputil.Error(w, http.StatusBadRequest, "invalid_request", "invalid multipart body")
+		return
+	}
+
+	file, err := openUploadedImageFile(r, "image")
+	if err != nil {
+		if errors.Is(err, http.ErrMissingFile) {
+			httputil.Error(w, http.StatusBadRequest, "invalid_request", "image is required")
+			return
+		}
+		httputil.Error(w, http.StatusBadRequest, "invalid_request", "invalid image upload")
+		return
+	}
+	defer file.Close()
+
+	storedPath, err := h.mediaStore.SaveSpaceImage(r.Context(), spaceID, kind, file)
+	if err != nil {
+		httputil.Error(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+
+	item, oldPath, memberIDs, err := h.repo.UpdateSpaceMediaPath(r.Context(), claims.UserID, spaceID, kind, storedPath)
+	if err != nil {
+		_ = h.mediaStore.Delete(r.Context(), storedPath)
+		h.writeError(w, err)
+		return
+	}
+	if oldPath != nil && strings.TrimSpace(*oldPath) != "" && *oldPath != storedPath {
+		_ = h.mediaStore.Delete(r.Context(), *oldPath)
+	}
+
+	h.sendSpaceUpdatedEvent(memberIDs, item)
+	httputil.JSON(w, http.StatusOK, toSpaceResponse(item))
+}
+
+func openUploadedImageFile(r *http.Request, fieldName string) (multipart.File, error) {
+	file, _, err := r.FormFile(fieldName)
+	if err == nil || !errors.Is(err, http.ErrMissingFile) {
+		return file, err
+	}
+
+	form := r.MultipartForm
+	if form == nil {
+		return nil, http.ErrMissingFile
+	}
+
+	for _, fallbackKey := range []string{"file", "photo", "attachment"} {
+		headers := form.File[fallbackKey]
+		if len(headers) == 0 {
+			continue
+		}
+		return headers[0].Open()
+	}
+
+	var onlyHeader *multipart.FileHeader
+	for _, headers := range form.File {
+		for _, header := range headers {
+			if onlyHeader != nil {
+				return nil, http.ErrMissingFile
+			}
+			onlyHeader = header
+		}
+	}
+	if onlyHeader == nil {
+		return nil, http.ErrMissingFile
+	}
+	return onlyHeader.Open()
+}
+
+func (h *Handler) sendSpaceUpdatedEvent(memberIDs []string, item SpaceSummary) {
+	if h.hub == nil {
+		return
+	}
+	event := wsutil.NewEvent("relationship_space_updated", map[string]any{
+		"relationship_space_id": item.RelationshipSpaceID,
+		"name":                  stringValue(item.Name),
+		"cover_photo_url":       spaceMediaURL(item.RelationshipSpaceID, "cover-photo", item.CoverPhotoPath),
+		"couple_photo_url":      spaceMediaURL(item.RelationshipSpaceID, "couple-photo", item.CouplePhotoPath),
+	})
+	for _, memberID := range memberIDs {
+		h.hub.SendToUser(memberID, event)
+	}
+}
+
+func (h *Handler) writeError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrInvalidInput):
+		httputil.Error(w, http.StatusBadRequest, "invalid_request", "invalid relationship space request")
+	case errors.Is(err, ErrSpaceNotFound):
+		httputil.Error(w, http.StatusNotFound, "not_found", "relationship space not found")
+	case errors.Is(err, ErrSpaceImageNotFound):
+		httputil.Error(w, http.StatusNotFound, "not_found", "relationship space image not found")
+	default:
+		httputil.Error(w, http.StatusInternalServerError, "internal_error", "internal server error")
+	}
+}
+
 func toSpaceResponse(item SpaceSummary) spaceResponse {
 	return spaceResponse{
 		RelationshipSpaceID: item.RelationshipSpaceID,
 		ConversationID:      item.ConversationID,
 		Name:                item.Name,
+		CoverPhotoURL:       spaceMediaURL(item.RelationshipSpaceID, "cover-photo", item.CoverPhotoPath),
+		CouplePhotoURL:      spaceMediaURL(item.RelationshipSpaceID, "couple-photo", item.CouplePhotoPath),
 		CreatedByUserID:     item.CreatedByUserID,
 		CurrentLevel:        item.CurrentLevel,
 		CurrentLevelName:    item.CurrentLevelName,
@@ -660,6 +878,21 @@ func toSpaceResponse(item SpaceSummary) spaceResponse {
 		CreatedAt:           item.CreatedAt.Unix(),
 		UpdatedAt:           item.UpdatedAt.Unix(),
 	}
+}
+
+func spaceMediaURL(spaceID, kind string, imagePath *string) *string {
+	if imagePath == nil || strings.TrimSpace(*imagePath) == "" {
+		return nil
+	}
+	url := fmt.Sprintf("/v1/relationship-spaces/%s/media/%s", spaceID, kind)
+	return &url
+}
+
+func stringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func toMoodResponses(items []SpaceMood) []moodResponse {

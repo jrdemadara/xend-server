@@ -91,15 +91,16 @@ func main() {
 	} else {
 		logger.Info("fcm notifier disabled", "reason", "FIREBASE_CREDENTIALS_FILE is empty")
 	}
-	relationshipHandler := relationship.NewHandler(relationshipRepo, userRepo, deviceRepo, emailEnqueuer, hub, pushNotifier)
-	dailyCheckInRepo := dailycheckin.NewRepository(pool)
-	dailyCheckInHandler := dailycheckin.NewHandler(dailyCheckInRepo, hub)
 	mediaStore, err := newMediaStore(ctx, cfg)
 	if err != nil {
 		logger.Error("media storage setup failed", "error", err)
 		os.Exit(1)
 	}
 	logger.Info("media storage configured", "driver", cfg.MediaStorageDriver)
+	relationshipMediaStore := relationship.NewMediaStore(mediaStore)
+	relationshipHandler := relationship.NewHandler(relationshipRepo, userRepo, deviceRepo, emailEnqueuer, hub, pushNotifier, relationshipMediaStore)
+	dailyCheckInRepo := dailycheckin.NewRepository(pool)
+	dailyCheckInHandler := dailycheckin.NewHandler(dailyCheckInRepo, hub)
 	dailyRitualRepo := dailyritual.NewRepository(pool)
 	dailyRitualStore := dailyritual.NewSubmissionStore(mediaStore)
 	dailyRitualHandler := dailyritual.NewHandler(dailyRitualRepo, dailyRitualStore)

@@ -275,6 +275,8 @@ func (r *Repository) ListSpacesByUser(ctx context.Context, userID string) ([]Spa
 		       rs.created_by_user_id,
 		       rs.current_level,
 		       COALESCE(rl.name, 'Tease') AS current_level_name,
+		       rs.cover_photo_path,
+		       rs.couple_photo_path,
 		       COALESCE(usp.default_relationship_space_id = rs.id, false) AS is_default,
 		       rsma.access_hint,
 		       COALESCE(rsma.access_passphrase_hash IS NOT NULL AND rsma.access_passphrase_hash <> '', false) AS access_configured,
@@ -307,6 +309,8 @@ func (r *Repository) ListSpacesByUser(ctx context.Context, userID string) ([]Spa
 			&item.CreatedByUserID,
 			&item.CurrentLevel,
 			&item.CurrentLevelName,
+			&item.CoverPhotoPath,
+			&item.CouplePhotoPath,
 			&item.IsDefault,
 			&item.AccessHint,
 			&item.AccessConfigured,
@@ -319,6 +323,195 @@ func (r *Repository) ListSpacesByUser(ctx context.Context, userID string) ([]Spa
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+func (r *Repository) GetSpaceByIDForUser(ctx context.Context, userID, spaceID string) (SpaceSummary, error) {
+	var item SpaceSummary
+	err := r.db.QueryRow(ctx, `
+		SELECT rs.id,
+		       COALESCE(c.id::text, ''),
+		       rs.name,
+		       rs.created_by_user_id,
+		       rs.current_level,
+		       COALESCE(rl.name, 'Tease') AS current_level_name,
+		       rs.cover_photo_path,
+		       rs.couple_photo_path,
+		       COALESCE(usp.default_relationship_space_id = rs.id, false) AS is_default,
+		       rsma.access_hint,
+		       COALESCE(rsma.access_passphrase_hash IS NOT NULL AND rsma.access_passphrase_hash <> '', false) AS access_configured,
+		       rs.archived_at,
+		       rs.created_at,
+		       rs.updated_at
+		FROM relationship_spaces rs
+		JOIN relationship_space_members rsm ON rsm.relationship_space_id = rs.id
+		LEFT JOIN conversations c ON c.relationship_space_id = rs.id
+		LEFT JOIN user_space_preferences usp ON usp.user_id = rsm.user_id
+		LEFT JOIN relationship_space_member_access rsma
+		  ON rsma.relationship_space_id = rs.id AND rsma.user_id = rsm.user_id
+		LEFT JOIN relationship_levels rl ON rl.level = rs.current_level
+		WHERE rs.id = $2
+		  AND rsm.user_id = $1
+		  AND rsm.membership_status = 'active'
+	`, userID, spaceID).Scan(
+		&item.RelationshipSpaceID,
+		&item.ConversationID,
+		&item.Name,
+		&item.CreatedByUserID,
+		&item.CurrentLevel,
+		&item.CurrentLevelName,
+		&item.CoverPhotoPath,
+		&item.CouplePhotoPath,
+		&item.IsDefault,
+		&item.AccessHint,
+		&item.AccessConfigured,
+		&item.ArchivedAt,
+		&item.CreatedAt,
+		&item.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return SpaceSummary{}, ErrSpaceNotFound
+		}
+		return SpaceSummary{}, err
+	}
+	return item, nil
+}
+
+func (r *Repository) UpdateSpaceSettings(ctx context.Context, userID, spaceID string, name *string) (SpaceSummary, []string, error) {
+	tag, err := r.db.Exec(ctx, `
+		UPDATE relationship_spaces rs
+		SET name = $3
+		WHERE rs.id = $2
+		  AND EXISTS (
+			SELECT 1
+			FROM relationship_space_members rsm
+			WHERE rsm.relationship_space_id = rs.id
+			  AND rsm.user_id = $1
+			  AND rsm.membership_status = 'active'
+		  )
+	`, userID, spaceID, name)
+	if err != nil {
+		return SpaceSummary{}, nil, err
+	}
+	if tag.RowsAffected() == 0 {
+		return SpaceSummary{}, nil, ErrSpaceNotFound
+	}
+
+	memberIDs, err := r.listActiveSpaceMemberIDs(ctx, spaceID)
+	if err != nil {
+		return SpaceSummary{}, nil, err
+	}
+	item, err := r.GetSpaceByIDForUser(ctx, userID, spaceID)
+	if err != nil {
+		return SpaceSummary{}, nil, err
+	}
+	return item, memberIDs, nil
+}
+
+func (r *Repository) UpdateSpaceMediaPath(ctx context.Context, userID, spaceID, kind, imagePath string) (SpaceSummary, *string, []string, error) {
+	var query string
+	switch kind {
+	case "cover-photo":
+		query = `
+			WITH target AS (
+				SELECT rs.cover_photo_path AS old_path
+				FROM relationship_spaces rs
+				WHERE rs.id = $2
+				  AND EXISTS (
+					SELECT 1
+					FROM relationship_space_members rsm
+					WHERE rsm.relationship_space_id = rs.id
+					  AND rsm.user_id = $1
+					  AND rsm.membership_status = 'active'
+				  )
+				FOR UPDATE
+			)
+			UPDATE relationship_spaces rs
+			SET cover_photo_path = $3
+			FROM target
+			WHERE rs.id = $2
+			RETURNING target.old_path
+		`
+	case "couple-photo":
+		query = `
+			WITH target AS (
+				SELECT rs.couple_photo_path AS old_path
+				FROM relationship_spaces rs
+				WHERE rs.id = $2
+				  AND EXISTS (
+					SELECT 1
+					FROM relationship_space_members rsm
+					WHERE rsm.relationship_space_id = rs.id
+					  AND rsm.user_id = $1
+					  AND rsm.membership_status = 'active'
+				  )
+				FOR UPDATE
+			)
+			UPDATE relationship_spaces rs
+			SET couple_photo_path = $3
+			FROM target
+			WHERE rs.id = $2
+			RETURNING target.old_path
+		`
+	default:
+		return SpaceSummary{}, nil, nil, ErrInvalidInput
+	}
+
+	var oldPath *string
+	if err := r.db.QueryRow(ctx, query, userID, spaceID, imagePath).Scan(&oldPath); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return SpaceSummary{}, nil, nil, ErrSpaceNotFound
+		}
+		return SpaceSummary{}, nil, nil, err
+	}
+
+	memberIDs, err := r.listActiveSpaceMemberIDs(ctx, spaceID)
+	if err != nil {
+		return SpaceSummary{}, nil, nil, err
+	}
+	item, err := r.GetSpaceByIDForUser(ctx, userID, spaceID)
+	if err != nil {
+		return SpaceSummary{}, nil, nil, err
+	}
+	return item, oldPath, memberIDs, nil
+}
+
+func (r *Repository) GetSpaceMediaPath(ctx context.Context, userID, spaceID, kind string) (string, error) {
+	var query string
+	switch kind {
+	case "cover-photo":
+		query = `
+			SELECT rs.cover_photo_path
+			FROM relationship_spaces rs
+			JOIN relationship_space_members rsm ON rsm.relationship_space_id = rs.id
+			WHERE rs.id = $2
+			  AND rsm.user_id = $1
+			  AND rsm.membership_status = 'active'
+		`
+	case "couple-photo":
+		query = `
+			SELECT rs.couple_photo_path
+			FROM relationship_spaces rs
+			JOIN relationship_space_members rsm ON rsm.relationship_space_id = rs.id
+			WHERE rs.id = $2
+			  AND rsm.user_id = $1
+			  AND rsm.membership_status = 'active'
+		`
+	default:
+		return "", ErrInvalidInput
+	}
+
+	var imagePath *string
+	if err := r.db.QueryRow(ctx, query, userID, spaceID).Scan(&imagePath); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", ErrSpaceNotFound
+		}
+		return "", err
+	}
+	if imagePath == nil || *imagePath == "" {
+		return "", ErrSpaceImageNotFound
+	}
+	return *imagePath, nil
 }
 
 func (r *Repository) SetDefaultSpace(ctx context.Context, userID, spaceID string) error {
@@ -342,6 +535,29 @@ func (r *Repository) SetDefaultSpace(ctx context.Context, userID, spaceID string
 		return ErrSpaceNotFound
 	}
 	return nil
+}
+
+func (r *Repository) listActiveSpaceMemberIDs(ctx context.Context, spaceID string) ([]string, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT user_id
+		FROM relationship_space_members
+		WHERE relationship_space_id = $1
+		  AND membership_status = 'active'
+	`, spaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := make([]string, 0, 2)
+	for rows.Next() {
+		var userID string
+		if err := rows.Scan(&userID); err != nil {
+			return nil, err
+		}
+		items = append(items, userID)
+	}
+	return items, rows.Err()
 }
 
 func (r *Repository) UpsertSpaceAccess(ctx context.Context, userID, spaceID, passphrase string, hint *string) error {
@@ -384,6 +600,8 @@ func (r *Repository) UnlockSpace(ctx context.Context, userID, passphrase string)
 		       rs.created_by_user_id,
 		       rs.current_level,
 		       COALESCE(rl.name, 'Tease') AS current_level_name,
+		       rs.cover_photo_path,
+		       rs.couple_photo_path,
 		       COALESCE(usp.default_relationship_space_id = rs.id, false) AS is_default,
 		       rsma.access_hint,
 		       COALESCE(rsma.access_passphrase_hash IS NOT NULL AND rsma.access_passphrase_hash <> '', false) AS access_configured,
@@ -419,6 +637,8 @@ func (r *Repository) UnlockSpace(ctx context.Context, userID, passphrase string)
 			&item.CreatedByUserID,
 			&item.CurrentLevel,
 			&item.CurrentLevelName,
+			&item.CoverPhotoPath,
+			&item.CouplePhotoPath,
 			&item.IsDefault,
 			&item.AccessHint,
 			&item.AccessConfigured,

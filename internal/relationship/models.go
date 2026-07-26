@@ -24,6 +24,8 @@ type SpaceSummary struct {
 	CreatedByUserID     string
 	CurrentLevel        int16
 	CurrentLevelName    string
+	CoverPhotoPath      *string
+	CouplePhotoPath     *string
 	IsDefault           bool
 	AccessHint          *string
 	AccessConfigured    bool
@@ -78,4 +80,6 @@ var (
 	ErrInviteNotFound      = errors.New("invite not found")
 	ErrSpaceNotFound       = errors.New("relationship space not found")
 	ErrSpaceAccessNotFound = errors.New("relationship space access not found")
+	ErrImageRequired       = errors.New("image is required")
+	ErrSpaceImageNotFound  = errors.New("relationship space image not found")
 )
