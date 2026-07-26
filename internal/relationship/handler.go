@@ -1,6 +1,8 @@
 package relationship
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -53,7 +55,9 @@ type spaceResponse struct {
 	ConversationID        string  `json:"conversation_id"`
 	Name                  *string `json:"name,omitempty"`
 	CoverPhotoURL         *string `json:"cover_photo_url,omitempty"`
+	CoverPhotoVersion     *string `json:"cover_photo_version,omitempty"`
 	CouplePhotoURL        *string `json:"couple_photo_url,omitempty"`
+	CouplePhotoVersion    *string `json:"couple_photo_version,omitempty"`
 	RelationshipStartDate string  `json:"relationship_start_date"`
 	CelebrateMonthsary    bool    `json:"celebrate_monthsary"`
 	CelebrateAnniversary  bool    `json:"celebrate_anniversary"`
@@ -874,7 +878,9 @@ func (h *Handler) sendSpaceUpdatedEvent(memberIDs []string, item SpaceSummary) {
 		"relationship_space_id":   item.RelationshipSpaceID,
 		"name":                    stringValue(item.Name),
 		"cover_photo_url":         spaceMediaURL(item.RelationshipSpaceID, "cover-photo", item.CoverPhotoPath),
+		"cover_photo_version":     spaceMediaVersion(item.CoverPhotoPath),
 		"couple_photo_url":        spaceMediaURL(item.RelationshipSpaceID, "couple-photo", item.CouplePhotoPath),
+		"couple_photo_version":    spaceMediaVersion(item.CouplePhotoPath),
 		"relationship_start_date": formatDate(item.RelationshipStartDate),
 		"celebrate_monthsary":     item.CelebrateMonthsary,
 		"celebrate_anniversary":   item.CelebrateAnniversary,
@@ -903,7 +909,9 @@ func toSpaceResponse(item SpaceSummary) spaceResponse {
 		ConversationID:        item.ConversationID,
 		Name:                  item.Name,
 		CoverPhotoURL:         spaceMediaURL(item.RelationshipSpaceID, "cover-photo", item.CoverPhotoPath),
+		CoverPhotoVersion:     spaceMediaVersion(item.CoverPhotoPath),
 		CouplePhotoURL:        spaceMediaURL(item.RelationshipSpaceID, "couple-photo", item.CouplePhotoPath),
+		CouplePhotoVersion:    spaceMediaVersion(item.CouplePhotoPath),
 		RelationshipStartDate: formatDate(item.RelationshipStartDate),
 		CelebrateMonthsary:    item.CelebrateMonthsary,
 		CelebrateAnniversary:  item.CelebrateAnniversary,
@@ -929,6 +937,15 @@ func spaceMediaURL(spaceID, kind string, imagePath *string) *string {
 	}
 	url := fmt.Sprintf("/v1/relationship-spaces/%s/media/%s", spaceID, kind)
 	return &url
+}
+
+func spaceMediaVersion(imagePath *string) *string {
+	if imagePath == nil || strings.TrimSpace(*imagePath) == "" {
+		return nil
+	}
+	sum := sha256.Sum256([]byte(strings.TrimSpace(*imagePath)))
+	version := hex.EncodeToString(sum[:8])
+	return &version
 }
 
 func stringValue(value *string) string {
