@@ -279,6 +279,8 @@ func (r *Repository) ListSpacesByUser(ctx context.Context, userID string) ([]Spa
 		       rs.cover_photo_path,
 		       rs.couple_photo_path,
 		       rs.relationship_start_date,
+		       rs.celebrate_monthsary,
+		       rs.celebrate_anniversary,
 		       COALESCE(usp.default_relationship_space_id = rs.id, false) AS is_default,
 		       rsma.access_hint,
 		       COALESCE(rsma.access_passphrase_hash IS NOT NULL AND rsma.access_passphrase_hash <> '', false) AS access_configured,
@@ -314,6 +316,8 @@ func (r *Repository) ListSpacesByUser(ctx context.Context, userID string) ([]Spa
 			&item.CoverPhotoPath,
 			&item.CouplePhotoPath,
 			&item.RelationshipStartDate,
+			&item.CelebrateMonthsary,
+			&item.CelebrateAnniversary,
 			&item.IsDefault,
 			&item.AccessHint,
 			&item.AccessConfigured,
@@ -340,6 +344,8 @@ func (r *Repository) GetSpaceByIDForUser(ctx context.Context, userID, spaceID st
 		       rs.cover_photo_path,
 		       rs.couple_photo_path,
 		       rs.relationship_start_date,
+		       rs.celebrate_monthsary,
+		       rs.celebrate_anniversary,
 		       COALESCE(usp.default_relationship_space_id = rs.id, false) AS is_default,
 		       rsma.access_hint,
 		       COALESCE(rsma.access_passphrase_hash IS NOT NULL AND rsma.access_passphrase_hash <> '', false) AS access_configured,
@@ -366,6 +372,8 @@ func (r *Repository) GetSpaceByIDForUser(ctx context.Context, userID, spaceID st
 		&item.CoverPhotoPath,
 		&item.CouplePhotoPath,
 		&item.RelationshipStartDate,
+		&item.CelebrateMonthsary,
+		&item.CelebrateAnniversary,
 		&item.IsDefault,
 		&item.AccessHint,
 		&item.AccessConfigured,
@@ -382,11 +390,21 @@ func (r *Repository) GetSpaceByIDForUser(ctx context.Context, userID, spaceID st
 	return item, nil
 }
 
-func (r *Repository) UpdateSpaceSettings(ctx context.Context, userID, spaceID string, name *string, relationshipStartDate *time.Time) (SpaceSummary, []string, error) {
+func (r *Repository) UpdateSpaceSettings(
+	ctx context.Context,
+	userID string,
+	spaceID string,
+	name *string,
+	relationshipStartDate *time.Time,
+	celebrateMonthsary *bool,
+	celebrateAnniversary *bool,
+) (SpaceSummary, []string, error) {
 	tag, err := r.db.Exec(ctx, `
 		UPDATE relationship_spaces rs
 		SET name = $3,
-		    relationship_start_date = COALESCE($4::date, relationship_start_date)
+		    relationship_start_date = COALESCE($4::date, relationship_start_date),
+		    celebrate_monthsary = COALESCE($5::boolean, celebrate_monthsary),
+		    celebrate_anniversary = COALESCE($6::boolean, celebrate_anniversary)
 		WHERE rs.id = $2
 		  AND EXISTS (
 			SELECT 1
@@ -395,7 +413,7 @@ func (r *Repository) UpdateSpaceSettings(ctx context.Context, userID, spaceID st
 			  AND rsm.user_id = $1
 			  AND rsm.membership_status = 'active'
 		  )
-	`, userID, spaceID, name, relationshipStartDate)
+	`, userID, spaceID, name, relationshipStartDate, celebrateMonthsary, celebrateAnniversary)
 	if err != nil {
 		return SpaceSummary{}, nil, err
 	}
@@ -609,6 +627,8 @@ func (r *Repository) UnlockSpace(ctx context.Context, userID, passphrase string)
 		       rs.cover_photo_path,
 		       rs.couple_photo_path,
 		       rs.relationship_start_date,
+		       rs.celebrate_monthsary,
+		       rs.celebrate_anniversary,
 		       COALESCE(usp.default_relationship_space_id = rs.id, false) AS is_default,
 		       rsma.access_hint,
 		       COALESCE(rsma.access_passphrase_hash IS NOT NULL AND rsma.access_passphrase_hash <> '', false) AS access_configured,
@@ -647,6 +667,8 @@ func (r *Repository) UnlockSpace(ctx context.Context, userID, passphrase string)
 			&item.CoverPhotoPath,
 			&item.CouplePhotoPath,
 			&item.RelationshipStartDate,
+			&item.CelebrateMonthsary,
+			&item.CelebrateAnniversary,
 			&item.IsDefault,
 			&item.AccessHint,
 			&item.AccessConfigured,

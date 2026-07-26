@@ -27,6 +27,8 @@ type SpaceSummary struct {
 	CoverPhotoPath        *string
 	CouplePhotoPath       *string
 	RelationshipStartDate time.Time
+	CelebrateMonthsary    bool
+	CelebrateAnniversary  bool
 	IsDefault             bool
 	AccessHint            *string
 	AccessConfigured      bool

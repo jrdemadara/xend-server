@@ -55,6 +55,8 @@ type spaceResponse struct {
 	CoverPhotoURL         *string `json:"cover_photo_url,omitempty"`
 	CouplePhotoURL        *string `json:"couple_photo_url,omitempty"`
 	RelationshipStartDate string  `json:"relationship_start_date"`
+	CelebrateMonthsary    bool    `json:"celebrate_monthsary"`
+	CelebrateAnniversary  bool    `json:"celebrate_anniversary"`
 	CreatedByUserID       string  `json:"created_by_user_id"`
 	CurrentLevel          int16   `json:"current_level"`
 	CurrentLevelName      string  `json:"current_level_name"`
@@ -97,6 +99,8 @@ type moodRequest struct {
 type updateSpaceSettingsRequest struct {
 	Name                  *string `json:"name"`
 	RelationshipStartDate *string `json:"relationship_start_date"`
+	CelebrateMonthsary    *bool   `json:"celebrate_monthsary"`
+	CelebrateAnniversary  *bool   `json:"celebrate_anniversary"`
 }
 
 type moodResponse struct {
@@ -535,7 +539,15 @@ func (h *Handler) UpdateSpaceSettings(w http.ResponseWriter, r *http.Request) {
 		relationshipStartDate = &parsed
 	}
 
-	item, memberIDs, err := h.repo.UpdateSpaceSettings(r.Context(), claims.UserID, spaceID, name, relationshipStartDate)
+	item, memberIDs, err := h.repo.UpdateSpaceSettings(
+		r.Context(),
+		claims.UserID,
+		spaceID,
+		name,
+		relationshipStartDate,
+		req.CelebrateMonthsary,
+		req.CelebrateAnniversary,
+	)
 	if err != nil {
 		h.writeError(w, err)
 		return
@@ -864,6 +876,8 @@ func (h *Handler) sendSpaceUpdatedEvent(memberIDs []string, item SpaceSummary) {
 		"cover_photo_url":         spaceMediaURL(item.RelationshipSpaceID, "cover-photo", item.CoverPhotoPath),
 		"couple_photo_url":        spaceMediaURL(item.RelationshipSpaceID, "couple-photo", item.CouplePhotoPath),
 		"relationship_start_date": formatDate(item.RelationshipStartDate),
+		"celebrate_monthsary":     item.CelebrateMonthsary,
+		"celebrate_anniversary":   item.CelebrateAnniversary,
 	})
 	for _, memberID := range memberIDs {
 		h.hub.SendToUser(memberID, event)
@@ -891,6 +905,8 @@ func toSpaceResponse(item SpaceSummary) spaceResponse {
 		CoverPhotoURL:         spaceMediaURL(item.RelationshipSpaceID, "cover-photo", item.CoverPhotoPath),
 		CouplePhotoURL:        spaceMediaURL(item.RelationshipSpaceID, "couple-photo", item.CouplePhotoPath),
 		RelationshipStartDate: formatDate(item.RelationshipStartDate),
+		CelebrateMonthsary:    item.CelebrateMonthsary,
+		CelebrateAnniversary:  item.CelebrateAnniversary,
 		CreatedByUserID:       item.CreatedByUserID,
 		CurrentLevel:          item.CurrentLevel,
 		CurrentLevelName:      item.CurrentLevelName,
