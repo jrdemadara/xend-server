@@ -49,20 +49,21 @@ type createInviteRequest struct {
 }
 
 type spaceResponse struct {
-	RelationshipSpaceID string  `json:"relationship_space_id"`
-	ConversationID      string  `json:"conversation_id"`
-	Name                *string `json:"name,omitempty"`
-	CoverPhotoURL       *string `json:"cover_photo_url,omitempty"`
-	CouplePhotoURL      *string `json:"couple_photo_url,omitempty"`
-	CreatedByUserID     string  `json:"created_by_user_id"`
-	CurrentLevel        int16   `json:"current_level"`
-	CurrentLevelName    string  `json:"current_level_name"`
-	IsDefault           bool    `json:"is_default"`
-	AccessHint          *string `json:"access_hint,omitempty"`
-	AccessConfigured    bool    `json:"access_configured"`
-	ArchivedAt          *int64  `json:"archived_at,omitempty"`
-	CreatedAt           int64   `json:"created_at"`
-	UpdatedAt           int64   `json:"updated_at"`
+	RelationshipSpaceID   string  `json:"relationship_space_id"`
+	ConversationID        string  `json:"conversation_id"`
+	Name                  *string `json:"name,omitempty"`
+	CoverPhotoURL         *string `json:"cover_photo_url,omitempty"`
+	CouplePhotoURL        *string `json:"couple_photo_url,omitempty"`
+	RelationshipStartDate string  `json:"relationship_start_date"`
+	CreatedByUserID       string  `json:"created_by_user_id"`
+	CurrentLevel          int16   `json:"current_level"`
+	CurrentLevelName      string  `json:"current_level_name"`
+	IsDefault             bool    `json:"is_default"`
+	AccessHint            *string `json:"access_hint,omitempty"`
+	AccessConfigured      bool    `json:"access_configured"`
+	ArchivedAt            *int64  `json:"archived_at,omitempty"`
+	CreatedAt             int64   `json:"created_at"`
+	UpdatedAt             int64   `json:"updated_at"`
 }
 
 type levelResponse struct {
@@ -94,7 +95,8 @@ type moodRequest struct {
 }
 
 type updateSpaceSettingsRequest struct {
-	Name *string `json:"name"`
+	Name                  *string `json:"name"`
+	RelationshipStartDate *string `json:"relationship_start_date"`
 }
 
 type moodResponse struct {
@@ -514,7 +516,26 @@ func (h *Handler) UpdateSpaceSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	item, memberIDs, err := h.repo.UpdateSpaceSettings(r.Context(), claims.UserID, spaceID, name)
+	var relationshipStartDate *time.Time
+	if req.RelationshipStartDate != nil {
+		cleaned := strings.TrimSpace(*req.RelationshipStartDate)
+		parsed, err := time.Parse("2006-01-02", cleaned)
+		if err != nil {
+			httputil.Error(w, http.StatusBadRequest, "invalid_request", "relationship_start_date must use YYYY-MM-DD")
+			return
+		}
+		if parsed.Before(time.Date(1900, 1, 1, 0, 0, 0, 0, time.UTC)) {
+			httputil.Error(w, http.StatusBadRequest, "invalid_request", "relationship_start_date is too old")
+			return
+		}
+		if parsed.After(time.Now().UTC().Truncate(24 * time.Hour)) {
+			httputil.Error(w, http.StatusBadRequest, "invalid_request", "relationship_start_date cannot be in the future")
+			return
+		}
+		relationshipStartDate = &parsed
+	}
+
+	item, memberIDs, err := h.repo.UpdateSpaceSettings(r.Context(), claims.UserID, spaceID, name, relationshipStartDate)
 	if err != nil {
 		h.writeError(w, err)
 		return
@@ -838,10 +859,11 @@ func (h *Handler) sendSpaceUpdatedEvent(memberIDs []string, item SpaceSummary) {
 		return
 	}
 	event := wsutil.NewEvent("relationship_space_updated", map[string]any{
-		"relationship_space_id": item.RelationshipSpaceID,
-		"name":                  stringValue(item.Name),
-		"cover_photo_url":       spaceMediaURL(item.RelationshipSpaceID, "cover-photo", item.CoverPhotoPath),
-		"couple_photo_url":      spaceMediaURL(item.RelationshipSpaceID, "couple-photo", item.CouplePhotoPath),
+		"relationship_space_id":   item.RelationshipSpaceID,
+		"name":                    stringValue(item.Name),
+		"cover_photo_url":         spaceMediaURL(item.RelationshipSpaceID, "cover-photo", item.CoverPhotoPath),
+		"couple_photo_url":        spaceMediaURL(item.RelationshipSpaceID, "couple-photo", item.CouplePhotoPath),
+		"relationship_start_date": formatDate(item.RelationshipStartDate),
 	})
 	for _, memberID := range memberIDs {
 		h.hub.SendToUser(memberID, event)
@@ -863,21 +885,26 @@ func (h *Handler) writeError(w http.ResponseWriter, err error) {
 
 func toSpaceResponse(item SpaceSummary) spaceResponse {
 	return spaceResponse{
-		RelationshipSpaceID: item.RelationshipSpaceID,
-		ConversationID:      item.ConversationID,
-		Name:                item.Name,
-		CoverPhotoURL:       spaceMediaURL(item.RelationshipSpaceID, "cover-photo", item.CoverPhotoPath),
-		CouplePhotoURL:      spaceMediaURL(item.RelationshipSpaceID, "couple-photo", item.CouplePhotoPath),
-		CreatedByUserID:     item.CreatedByUserID,
-		CurrentLevel:        item.CurrentLevel,
-		CurrentLevelName:    item.CurrentLevelName,
-		IsDefault:           item.IsDefault,
-		AccessHint:          item.AccessHint,
-		AccessConfigured:    item.AccessConfigured,
-		ArchivedAt:          timeToUnixPtr(item.ArchivedAt),
-		CreatedAt:           item.CreatedAt.Unix(),
-		UpdatedAt:           item.UpdatedAt.Unix(),
+		RelationshipSpaceID:   item.RelationshipSpaceID,
+		ConversationID:        item.ConversationID,
+		Name:                  item.Name,
+		CoverPhotoURL:         spaceMediaURL(item.RelationshipSpaceID, "cover-photo", item.CoverPhotoPath),
+		CouplePhotoURL:        spaceMediaURL(item.RelationshipSpaceID, "couple-photo", item.CouplePhotoPath),
+		RelationshipStartDate: formatDate(item.RelationshipStartDate),
+		CreatedByUserID:       item.CreatedByUserID,
+		CurrentLevel:          item.CurrentLevel,
+		CurrentLevelName:      item.CurrentLevelName,
+		IsDefault:             item.IsDefault,
+		AccessHint:            item.AccessHint,
+		AccessConfigured:      item.AccessConfigured,
+		ArchivedAt:            timeToUnixPtr(item.ArchivedAt),
+		CreatedAt:             item.CreatedAt.Unix(),
+		UpdatedAt:             item.UpdatedAt.Unix(),
 	}
+}
+
+func formatDate(value time.Time) string {
+	return value.UTC().Format("2006-01-02")
 }
 
 func spaceMediaURL(spaceID, kind string, imagePath *string) *string {

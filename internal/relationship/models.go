@@ -18,20 +18,21 @@ type Invite struct {
 }
 
 type SpaceSummary struct {
-	RelationshipSpaceID string
-	ConversationID      string
-	Name                *string
-	CreatedByUserID     string
-	CurrentLevel        int16
-	CurrentLevelName    string
-	CoverPhotoPath      *string
-	CouplePhotoPath     *string
-	IsDefault           bool
-	AccessHint          *string
-	AccessConfigured    bool
-	ArchivedAt          *time.Time
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
+	RelationshipSpaceID   string
+	ConversationID        string
+	Name                  *string
+	CreatedByUserID       string
+	CurrentLevel          int16
+	CurrentLevelName      string
+	CoverPhotoPath        *string
+	CouplePhotoPath       *string
+	RelationshipStartDate time.Time
+	IsDefault             bool
+	AccessHint            *string
+	AccessConfigured      bool
+	ArchivedAt            *time.Time
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
 }
 
 type InviteOutbox struct {

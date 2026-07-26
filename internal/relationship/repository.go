@@ -3,6 +3,7 @@ package relationship
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -277,6 +278,7 @@ func (r *Repository) ListSpacesByUser(ctx context.Context, userID string) ([]Spa
 		       COALESCE(rl.name, 'Tease') AS current_level_name,
 		       rs.cover_photo_path,
 		       rs.couple_photo_path,
+		       rs.relationship_start_date,
 		       COALESCE(usp.default_relationship_space_id = rs.id, false) AS is_default,
 		       rsma.access_hint,
 		       COALESCE(rsma.access_passphrase_hash IS NOT NULL AND rsma.access_passphrase_hash <> '', false) AS access_configured,
@@ -311,6 +313,7 @@ func (r *Repository) ListSpacesByUser(ctx context.Context, userID string) ([]Spa
 			&item.CurrentLevelName,
 			&item.CoverPhotoPath,
 			&item.CouplePhotoPath,
+			&item.RelationshipStartDate,
 			&item.IsDefault,
 			&item.AccessHint,
 			&item.AccessConfigured,
@@ -336,6 +339,7 @@ func (r *Repository) GetSpaceByIDForUser(ctx context.Context, userID, spaceID st
 		       COALESCE(rl.name, 'Tease') AS current_level_name,
 		       rs.cover_photo_path,
 		       rs.couple_photo_path,
+		       rs.relationship_start_date,
 		       COALESCE(usp.default_relationship_space_id = rs.id, false) AS is_default,
 		       rsma.access_hint,
 		       COALESCE(rsma.access_passphrase_hash IS NOT NULL AND rsma.access_passphrase_hash <> '', false) AS access_configured,
@@ -361,6 +365,7 @@ func (r *Repository) GetSpaceByIDForUser(ctx context.Context, userID, spaceID st
 		&item.CurrentLevelName,
 		&item.CoverPhotoPath,
 		&item.CouplePhotoPath,
+		&item.RelationshipStartDate,
 		&item.IsDefault,
 		&item.AccessHint,
 		&item.AccessConfigured,
@@ -377,10 +382,11 @@ func (r *Repository) GetSpaceByIDForUser(ctx context.Context, userID, spaceID st
 	return item, nil
 }
 
-func (r *Repository) UpdateSpaceSettings(ctx context.Context, userID, spaceID string, name *string) (SpaceSummary, []string, error) {
+func (r *Repository) UpdateSpaceSettings(ctx context.Context, userID, spaceID string, name *string, relationshipStartDate *time.Time) (SpaceSummary, []string, error) {
 	tag, err := r.db.Exec(ctx, `
 		UPDATE relationship_spaces rs
-		SET name = $3
+		SET name = $3,
+		    relationship_start_date = COALESCE($4::date, relationship_start_date)
 		WHERE rs.id = $2
 		  AND EXISTS (
 			SELECT 1
@@ -389,7 +395,7 @@ func (r *Repository) UpdateSpaceSettings(ctx context.Context, userID, spaceID st
 			  AND rsm.user_id = $1
 			  AND rsm.membership_status = 'active'
 		  )
-	`, userID, spaceID, name)
+	`, userID, spaceID, name, relationshipStartDate)
 	if err != nil {
 		return SpaceSummary{}, nil, err
 	}
@@ -602,6 +608,7 @@ func (r *Repository) UnlockSpace(ctx context.Context, userID, passphrase string)
 		       COALESCE(rl.name, 'Tease') AS current_level_name,
 		       rs.cover_photo_path,
 		       rs.couple_photo_path,
+		       rs.relationship_start_date,
 		       COALESCE(usp.default_relationship_space_id = rs.id, false) AS is_default,
 		       rsma.access_hint,
 		       COALESCE(rsma.access_passphrase_hash IS NOT NULL AND rsma.access_passphrase_hash <> '', false) AS access_configured,
@@ -639,6 +646,7 @@ func (r *Repository) UnlockSpace(ctx context.Context, userID, passphrase string)
 			&item.CurrentLevelName,
 			&item.CoverPhotoPath,
 			&item.CouplePhotoPath,
+			&item.RelationshipStartDate,
 			&item.IsDefault,
 			&item.AccessHint,
 			&item.AccessConfigured,
